@@ -188,7 +188,7 @@ def execute_detection(spark_session, data, configuration):
     
     std_scaler = StandardScaler()
     
-    data['par_model'] = 'ENSEMBLE_MODEL_V1'
+    data['par_model'] = 'ENSEMBLE_MODEL_V4'
     
     data['is_outlier'] = np.where(final_result > 0, np.vectorize(lambda x: format(int(x), 'b'))(final_result),'0').astype(str)
     

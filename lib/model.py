@@ -65,14 +65,16 @@ class MachineLearning:
 def detect_point_anomalies(data: pd.Series, threshold: int, window_size: int) -> np.ndarray:
     mean_12_loop = data.rolling(window=window_size * 12).mean()
     mean_24_loop = data.rolling(window=window_size * 24).mean()
+    std_12_loop = data.rolling(window=window_size * 12).std()
+    std_24_loop = data.rolling(window=window_size * 24).std()
     
     means = [mean_12_loop, mean_24_loop]
-    std = data.std()
+    stds = [std_12_loop, std_24_loop]
     
     final_result = np.zeros(data.shape[0])
     
     # calculate lower and upper boundaries
-    for mean in means:
+    for mean, std in zip(means, stds):
         lower_boundary = mean - (threshold * std)
         upper_boundary = mean + (threshold * std)
 
