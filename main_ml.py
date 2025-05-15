@@ -50,7 +50,7 @@ class Configuration:
         self.must_have_features = ['dt', 'tx_hour', 'count', 'mcc_mnc', 'rat_type', 'par_year', 'par_month', 'par_date', 'par_bound_type']
         
         # self.target_countries = [505,528,456,460,454,404,510,440,530,515,420,525,450,466,520,286,424,234,310,452]
-        self.target_countries = [234,424,452,525]
+        self.target_countries = [234,286,424,452,525]
     
     def import_python(self):
         # import all custom python modules
@@ -117,8 +117,8 @@ def execute_detection(spark_session, data, configuration):
     data['failed_count'] = data['total_count'] - data['count']
     
     # succ_rate_stl = STL(data['success_rate'], period=configuration.window_size * configuration.no_of_loop, seasonal_deg=0, trend_deg=0, low_pass_deg=0, robust=True).fit()
-    succ_tx_stl = STL(data['count'], period=configuration.window_size * configuration.no_of_loop, seasonal_deg=0, trend_deg=0, low_pass_deg=0, robust=True).fit()
-    fail_tx_stl = STL(data['failed_count'], period=configuration.window_size * configuration.no_of_loop, seasonal_deg=0, trend_deg=0, low_pass_deg=0, robust=True).fit()
+    succ_tx_stl = STL(np.log1p(data['count']), period=configuration.window_size * configuration.no_of_loop, seasonal_deg=0, trend_deg=0, low_pass_deg=0, robust=True).fit()
+    fail_tx_stl = STL(np.log1p(data['failed_count']), period=configuration.window_size * configuration.no_of_loop, seasonal_deg=0, trend_deg=0, low_pass_deg=0, robust=True).fit()
 
     data['success_count_trend'] = succ_tx_stl.trend
     data['success_count_seasonal'] = succ_tx_stl.seasonal
@@ -156,8 +156,8 @@ def execute_detection(spark_session, data, configuration):
         
     
     # 1. Point Anomalies  
-    succ_tx_result = model.detect_point_anomalies(data['success_count_residual'], configuration.threshold, configuration.window_size)
-    failed_tx_result = model.detect_point_anomalies(data['failed_count_residual'], configuration.threshold, configuration.window_size)
+    succ_tx_result = model.detect_point_anomalies(data['count'], configuration.threshold, configuration.window_size)
+    failed_tx_result = model.detect_point_anomalies(data['failed_count'], configuration.threshold, configuration.window_size)
     
     models = [succ_tx_result, failed_tx_result]
     
@@ -169,26 +169,29 @@ def execute_detection(spark_session, data, configuration):
         
         
     # 2. Cotextual Anomalies   
-    data['failed_count_context'] = model.detect_contextual_anomalies(data[['failed_count_residual', 'failed_count_seasonal']])
-    # data['success_count_context'] = model.detect_contextual_anomalies(data[['success_count_residual', 'success_count_seasonal']])
+    data['expected_success_value'] = data['success_count_trend'] + data['success_count_seasonal']
+    data['expecetd_failed_value'] = data['failed_count_trend'] + data['failed_count_seasonal']
+    
+    data['failed_count_context'] = model.detect_contextual_anomalies(data[['expecetd_failed_value', 'failed_count_residual']])
+    data['success_count_context'] = model.detect_contextual_anomalies(data[['expected_success_value', 'success_count_residual']])
     
     # check if a series of data is seasonaly
-    temp = np.zeros(data.shape[0])
-    acf_result = acf(
-        data['failed_count_seasonal'].diff().dropna(), 
-        nlags=data['failed_count'].shape[0] - 1
-    )[1:]
+    # temp = np.zeros(data.shape[0])
+    # acf_result = acf(
+    #     data['failed_count_seasonal'].diff().dropna(), 
+    #     nlags=data['failed_count'].shape[0] - 1
+    # )[1:]
     
-    temp[0: acf_result.shape[0]] = acf_result 
+    # temp[0: acf_result.shape[0]] = acf_result 
      
     
     # 3. Collective Anomalies
+    x = np.arange(0, data.shape[0], 1)
+    temp_succ = np.polyfit(x, data['count'], deg=3)
+    temp_fail = np.polyfit(x, data['failed_count'], deg=3)
+     
     
-    
-    
-    std_scaler = StandardScaler()
-    
-    data['par_model'] = 'ENSEMBLE_MODEL_V1'
+    data['par_model'] = 'ENSEMBLE_MODEL_V6'
     
     data['is_outlier'] = np.where(final_result > 0, np.vectorize(lambda x: format(int(x), 'b'))(final_result),'0').astype(str)
     
@@ -196,17 +199,17 @@ def execute_detection(spark_session, data, configuration):
     
     data['feature_2'] = data['failed_count']
     
-    data['feature_3'] = 0
+    data['feature_3'] = data['failed_count_seasonal']
             
-    data['feature_4'] = data['failed_count_seasonal']
+    data['feature_4'] = data['failed_count_residual']
     
-    data['feature_5'] = data['failed_count_residual']
+    data['feature_5'] = data['failed_count_trend']
     
-    data['feature_6'] = data['failed_count_trend']
+    data['feature_6'] = data['failed_count_context']
     
-    data['feature_7'] = data['failed_count_context']
+    data['feature_7'] = np.polyval(temp_fail, x)
     
-    data['feature_8'] = temp 
+    data['feature_8'] = np.polyval(temp_succ, x)
     
     data_to_ingest = data[
         [

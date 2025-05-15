@@ -62,10 +62,10 @@ class MachineLearning:
         return svm.fit_predict(data) == 1
  
 
-def detect_point_anomalies(data: pd.Series, threshold: int, window_size: int) -> np.ndarray:
+def detect_point_anomalies(data: pd.Series, threshold: int, window_size: int) -> np.ndarray: 
     mean_12_loop = data.rolling(window=window_size * 12).mean()
     mean_24_loop = data.rolling(window=window_size * 24).mean()
-    
+      
     means = [mean_12_loop, mean_24_loop]
     std = data.std()
     
