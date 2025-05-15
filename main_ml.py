@@ -117,8 +117,8 @@ def execute_detection(spark_session, data, configuration):
     data['failed_count'] = data['total_count'] - data['count']
     
     # succ_rate_stl = STL(data['success_rate'], period=configuration.window_size * configuration.no_of_loop, seasonal_deg=0, trend_deg=0, low_pass_deg=0, robust=True).fit()
-    succ_tx_stl = STL(np.log1p(data['count']), period=configuration.window_size * configuration.no_of_loop, seasonal_deg=0, trend_deg=0, low_pass_deg=0, robust=True).fit()
-    fail_tx_stl = STL(np.log1p(data['failed_count']), period=configuration.window_size * configuration.no_of_loop, seasonal_deg=0, trend_deg=0, low_pass_deg=0, robust=True).fit()
+    succ_tx_stl = STL(data['count'], period=configuration.window_size * configuration.no_of_loop, seasonal_deg=0, trend_deg=0, low_pass_deg=0, robust=True).fit()
+    fail_tx_stl = STL(data['failed_count'], period=configuration.window_size * configuration.no_of_loop, seasonal_deg=0, trend_deg=0, low_pass_deg=0, robust=True).fit()
 
     data['success_count_trend'] = succ_tx_stl.trend
     data['success_count_seasonal'] = succ_tx_stl.seasonal
