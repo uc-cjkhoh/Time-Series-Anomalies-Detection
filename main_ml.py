@@ -126,7 +126,7 @@ def execute_detection(spark_session, data, configuration):
         
         has_seasonality = util.check_seasonality(data[column], period=configuration.window_size * configuration.no_of_loop)
         data[column + '_seasonality_label'] = 1 if has_seasonality else 0
-         
+          
         target_features = scaler.fit_transform(
             data[[
                 column + '_residual',
@@ -143,15 +143,15 @@ def execute_detection(spark_session, data, configuration):
             )
 
         
-    data['par_model'] = 'ENSEMBLE_MODEL_V1'
+    data['par_model'] = 'ENSEMBLE_MODEL_V1' 
     
     data['is_outlier'] = data['failed_count_point_anomalies_result'].astype(str)
     
     data['feature_1'] = data['count']
     
     data['feature_2'] = data['failed_count']
-    
-    data['feature_3'] = data['failed_count_residual']
+     
+    data['feature_3'] = data['failed_count_residual'] 
             
     data['feature_4'] = data['count_point_anomalies_result']
     

@@ -8,8 +8,8 @@ import numpy as np
 import pandas as pd
 
 from sklearn.preprocessing import MinMaxScaler
-from statsmodels.tsa.stattools import acf
-from statsmodels.tsa.seasonal import STL 
+from statsmodels.tsa.stattools import acf 
+from statsmodels.tsa.seasonal import STL  
 
 def replace_point_anomalies(data: pd.Series, point_anomalies_labels: pd.Series, window_size: int = 5) -> pd.DataFrame:
     """
@@ -72,5 +72,4 @@ def check_seasonality(data: pd.Series, period: int) -> bool:
     stl = STL(data, period=period).fit()
     has_seasonality = True if max(0, 1 - (np.var(stl.resid) / np.var(stl.resid + stl.seasonal))) > 0.5 else False
       
-    return has_seasonality
- 
+    return has_seasonality 
