@@ -96,15 +96,7 @@ def execute_detection(spark_session, data, configuration):
     
     # find failed transaction count
     data['failed_count'] = data['total_count'] - data['count']
-    
-    # peaks, _ = find_peaks(fail_tx_stl.seasonal, distance=configuration.window_size * configuration.no_of_loop)
-    # valleys, _ = find_peaks(-fail_tx_stl.seasonal, distance=configuration.window_size * configuration.no_of_loop)
-    
-    # check if the data is messy 
-    rate_std = data['success_rate'].std()
-    
-    data = data.dropna()
-     
+       
     # 1. Point Anomalies  
     feature_to_target = ['count', 'failed_count'] 
      
@@ -134,18 +126,15 @@ def execute_detection(spark_session, data, configuration):
         
         has_seasonality = util.check_seasonality(data[column], period=configuration.window_size * configuration.no_of_loop)
         data[column + '_seasonality_label'] = 1 if has_seasonality else 0
-        
-        data = data.dropna()
-  
+         
         data[column + '_contextual_anomalies_isolation'], _ = model.detect_contextual_anomalies(
-            data[[ 
+            scaler.fit_transform(data[[ 
                 column + '_residual',
-                column + '_seasonal'
-            ]]
+                column + '_seasonal',
+                column + '_rolling_std'
+            ]])
         ) 
-        # else:
-        #     data[column + '_contextual_anomalies_isolation'] = data[column + '_contextual_anomalies_dbscan'] = data[column + '_point_anomalies_result']         
-
+        
     data['par_model'] = 'ENSEMBLE_MODEL_V3'
     
     data['is_outlier'] = data['failed_count_point_anomalies_result'].astype(str)
@@ -154,7 +143,7 @@ def execute_detection(spark_session, data, configuration):
     
     data['feature_2'] = data['failed_count']
     
-    data['feature_3'] = data['has_seasonality']
+    data['feature_3'] = data['failed_count_rolling_std']
             
     data['feature_4'] = data['count_point_anomalies_result']
     
@@ -188,7 +177,7 @@ def execute_detection(spark_session, data, configuration):
             'par_date', 
             'par_bound_type'
         ]
-    ][configuration.window_size:]
+    ]
      
     insert_into_hdfs(spark_session, data_to_ingest)
          
