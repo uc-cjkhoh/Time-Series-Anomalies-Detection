@@ -154,7 +154,7 @@ def execute_detection(spark_session, data, configuration):
     
     data['feature_2'] = data['failed_count']
     
-    data['feature_3'] = data['failed_count_seasonal']
+    data['feature_3'] = data['has_seasonality']
             
     data['feature_4'] = data['count_point_anomalies_result']
     
