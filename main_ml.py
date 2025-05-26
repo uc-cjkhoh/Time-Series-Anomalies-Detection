@@ -1,12 +1,9 @@
-from statsmodels.tsa.seasonal import STL, seasonal_decompose
-from statsmodels.tsa.stattools import acf
+from statsmodels.tsa.seasonal import STL, seasonal_decompose 
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col
-from sklearn.preprocessing import MinMaxScaler, StandardScaler 
-from scipy.signal import find_peaks
+from sklearn.preprocessing import MinMaxScaler  
 from tqdm import tqdm
 
-import sys
 import logging 
 import warnings
 import pandas as pd
@@ -50,7 +47,7 @@ class Configuration:
         self.must_have_features = ['dt', 'tx_hour', 'count', 'mcc_mnc', 'rat_type', 'par_year', 'par_month', 'par_date', 'par_bound_type']
         
         # self.target_countries = [505,528,456,460,454,404,510,440,530,515,420,525,450,466,520,286,424,234,310,452]
-        self.target_countries = [234,286,424,452,525]
+        self.target_countries = [234,286,525]
     
     def import_python(self):
         # import all custom python modules
@@ -69,17 +66,11 @@ def execute_sql(spark, sql_query):
   
 
 def insert_into_hdfs(spark_session, data):
-    # import into hdfs
     spark_df = spark_session.createDataFrame(data) 
 
     spark_df = spark_df.withColumn("rat_type", col("rat_type").cast("int"))
     spark_df = spark_df.withColumn("dt", col("dt").cast("timestamp")) 
     spark_df = spark_df.withColumn("success_rate", col("success_rate").cast("decimal(20, 6)"))
-    # spark_df = spark_df.withColumn("trend"   , col("trend"   ).cast("decimal(20, 6)"))
-    # spark_df = spark_df.withColumn("seasonal", col("seasonal").cast("decimal(20, 6)"))
-    # spark_df = spark_df.withColumn("residual", col("residual").cast("decimal(20, 6)"))
-    # spark_df = spark_df.withColumn("metric_1", col("metric_1").cast("decimal(20, 6)"))
-    # spark_df = spark_df.withColumn("metric_2", col("metric_2").cast("decimal(20, 6)"))
     
     spark_df = spark_df.withColumn("total_count", col("total_count").cast("int")) 
     spark_df = spark_df.withColumn("feature_1", col("feature_1").cast("decimal(20, 6)"))
@@ -91,19 +82,9 @@ def insert_into_hdfs(spark_session, data):
     spark_df = spark_df.withColumn("feature_7", col("feature_7").cast("decimal(20, 6)"))
     spark_df = spark_df.withColumn("feature_8", col("feature_8").cast("decimal(20, 6)"))
       
-    # for col_name in data.columns:
-    #     if col_name[-6:] != 'result' and col_name[-11:] != 'lower_bound' and col_name[-11:] != 'upper_bound' and col_name[:11] == 'total_count':
-    #         spark_df = spark_df.withColumn(col_name, col(col_name).cast("int"))
-    
-    # print(spark_df.columns)
-    # print(data[24:].head(10).T)
-    # spark_df.show(10)
-
-    # sys.exit()
     try:    
         spark_df.write.mode('append').partitionBy('par_model', 'par_year', 'par_month', 'par_date', 'par_bound_type').parquet("hdfs://hadoopha/roam352_report/data/report/data_anomaly_2")
-    except Exception as e:
-        # util.logging(e)
+    except Exception as e: 
         print(f"Error: {e}")
 
 
@@ -116,84 +97,58 @@ def execute_detection(spark_session, data, configuration):
     # find failed transaction count
     data['failed_count'] = data['total_count'] - data['count']
     
-    # succ_rate_stl = STL(data['success_rate'], period=configuration.window_size * configuration.no_of_loop, seasonal_deg=0, trend_deg=0, low_pass_deg=0, robust=True).fit()
-    succ_tx_stl = STL(np.log1p(data['count']), period=configuration.window_size * configuration.no_of_loop, seasonal_deg=0, trend_deg=0, low_pass_deg=0, robust=True).fit()
-    fail_tx_stl = STL(np.log1p(data['failed_count']), period=configuration.window_size * configuration.no_of_loop, seasonal_deg=0, trend_deg=0, low_pass_deg=0, robust=True).fit()
-
-    data['success_count_trend'] = succ_tx_stl.trend
-    data['success_count_seasonal'] = succ_tx_stl.seasonal
-    data['success_count_residual'] = succ_tx_stl.resid
-    
-    data['failed_count_trend'] = fail_tx_stl.trend
-    data['failed_count_seasonal'] = fail_tx_stl.seasonal
-    data['failed_count_residual'] = fail_tx_stl.resid 
-    
-    peaks, _ = find_peaks(fail_tx_stl.seasonal, distance=configuration.window_size * configuration.no_of_loop)
-    valleys, _ = find_peaks(-fail_tx_stl.seasonal, distance=configuration.window_size * configuration.no_of_loop)
-     
-    # does this dataset has seasonality ? 
-    
-    
-    
-    # determine the cycle range and label the cycle
-    # cycle_range = [tuple(sorted((data['dt'].iloc[start], data['dt'].iloc[end]))) for start, end in zip(valleys, peaks)]
-    # print(cycle_range)
-    
-    # data['cycle_label'] = np.nan
-    # for i, (start, end) in enumerate(cycle_range):
-    #     data.loc[(data['dt'] >= start) & (data['dt'] <= end), 'cycle_label'] = i 
-         
-    # print(data['cycle_label'].values)
-         
-    # sys.exit()
-    
+    # peaks, _ = find_peaks(fail_tx_stl.seasonal, distance=configuration.window_size * configuration.no_of_loop)
+    # valleys, _ = find_peaks(-fail_tx_stl.seasonal, distance=configuration.window_size * configuration.no_of_loop)
     
     # check if the data is messy 
-    # rate_std = data['success_rate'].std()
+    rate_std = data['success_rate'].std()
     
     data = data.dropna()
-    
-        
-    
+     
     # 1. Point Anomalies  
-    succ_tx_result = model.detect_point_anomalies(data['count'], configuration.threshold, configuration.window_size)
-    failed_tx_result = model.detect_point_anomalies(data['failed_count'], configuration.threshold, configuration.window_size)
-    
-    models = [succ_tx_result, failed_tx_result]
-    
-    final_result = np.zeros(data.shape[0])
-    for i, temp_model in enumerate(models):
-        models[i] = np.where(temp_model >= 2, 2^i, 0)
-        final_result += models[i]
-        
-        
-        
-    # 2. Cotextual Anomalies   
-    data['expected_success_value'] = data['success_count_trend'] + data['success_count_seasonal']
-    data['expecetd_failed_value'] = data['failed_count_trend'] + data['failed_count_seasonal']
-    
-    data['failed_count_context'] = model.detect_contextual_anomalies(data[['expecetd_failed_value', 'failed_count_residual']])
-    data['success_count_context'] = model.detect_contextual_anomalies(data[['expected_success_value', 'success_count_residual']])
-    
-    # check if a series of data is seasonaly
-    # temp = np.zeros(data.shape[0])
-    # acf_result = acf(
-    #     data['failed_count_seasonal'].diff().dropna(), 
-    #     nlags=data['failed_count'].shape[0] - 1
-    # )[1:]
-    
-    # temp[0: acf_result.shape[0]] = acf_result 
+    feature_to_target = ['count', 'failed_count'] 
      
-    
-    # 3. Collective Anomalies
-    x = np.arange(0, data.shape[0], 1)
-    temp_succ = np.polyfit(x, data['count'], deg=3)
-    temp_fail = np.polyfit(x, data['failed_count'], deg=3)
+    for feature in feature_to_target:
+        data[feature + '_point_anomalies_result'] = np.where(
+            model.detect_point_anomalies(data[feature], configuration.threshold, configuration.window_size) == 2,
+            1,
+            0
+        )
+         
+        # replace point anomalies with mean
+        data['smoothed_' + feature] = util.replace_point_anomalies(data[feature], data[feature + '_point_anomalies_result'], configuration.window_size)
      
+    # 2. Contextual Anomalies
+    scaler = MinMaxScaler()
+    for column in feature_to_target:
+        stl_decompose = STL(data['smoothed_' + column], period=configuration.window_size * configuration.no_of_loop, seasonal_deg=0, trend_deg=0, low_pass_deg=0, robust=True).fit()
+        
+        data[column + '_seasonal'] = stl_decompose.seasonal 
+        data[column + '_trend'] = stl_decompose.trend 
+        data[column + '_residual'] = stl_decompose.resid
+        
+        data['expected_' + column] = stl_decompose.trend + stl_decompose.seasonal
+        
+        data[column + '_rolling_std'] = data['smoothed_' + column].rolling(window=configuration.window_size * configuration.no_of_loop, min_periods=1).std()
+        data[column + '_rolling_mean'] = data['smoothed_' + column].rolling(window=configuration.window_size * configuration.no_of_loop, min_periods=1).mean()            
+        
+        has_seasonality = util.check_seasonality(data[column], period=configuration.window_size * configuration.no_of_loop)
+        data[column + '_seasonality_label'] = 1 if has_seasonality else 0
+        
+        data = data.dropna()
+  
+        data[column + '_contextual_anomalies_isolation'], _ = model.detect_contextual_anomalies(
+            data[[ 
+                column + '_residual',
+                column + '_seasonal'
+            ]]
+        ) 
+        # else:
+        #     data[column + '_contextual_anomalies_isolation'] = data[column + '_contextual_anomalies_dbscan'] = data[column + '_point_anomalies_result']         
+
+    data['par_model'] = 'ENSEMBLE_MODEL_V3'
     
-    data['par_model'] = 'ENSEMBLE_MODEL_V6'
-    
-    data['is_outlier'] = np.where(final_result > 0, np.vectorize(lambda x: format(int(x), 'b'))(final_result),'0').astype(str)
+    data['is_outlier'] = data['failed_count_point_anomalies_result'].astype(str)
     
     data['feature_1'] = data['count']
     
@@ -201,15 +156,15 @@ def execute_detection(spark_session, data, configuration):
     
     data['feature_3'] = data['failed_count_seasonal']
             
-    data['feature_4'] = data['failed_count_residual']
+    data['feature_4'] = data['count_point_anomalies_result']
     
-    data['feature_5'] = data['failed_count_trend']
+    data['feature_5'] = data['count_contextual_anomalies_isolation']
     
-    data['feature_6'] = data['failed_count_context']
+    data['feature_6'] = data['failed_count_contextual_anomalies_isolation']
     
-    data['feature_7'] = np.polyval(temp_fail, x)
+    data['feature_7'] = data['count_seasonality_label']
     
-    data['feature_8'] = np.polyval(temp_succ, x)
+    data['feature_8'] = data['failed_count_seasonality_label']
     
     data_to_ingest = data[
         [
@@ -290,8 +245,7 @@ if __name__ == "__main__":
                 
                 start_action(spark_session, data, configuration)
                             
-            except Exception as e:
-                # util.logging(e)
+            except Exception as e: 
                 print(f"Error: {e}")
                     
     spark_session.stop()
