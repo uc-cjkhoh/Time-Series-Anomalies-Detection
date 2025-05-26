@@ -126,24 +126,32 @@ def execute_detection(spark_session, data, configuration):
         
         has_seasonality = util.check_seasonality(data[column], period=configuration.window_size * configuration.no_of_loop)
         data[column + '_seasonality_label'] = 1 if has_seasonality else 0
-         
-        data[column + '_contextual_anomalies_isolation'], _ = model.detect_contextual_anomalies(
-            scaler.fit_transform(data[[ 
+          
+        target_features = scaler.fit_transform(
+            data[[
                 column + '_residual',
-                column + '_seasonal',
-                column + '_rolling_std'
-            ]])
-        ) 
+                column + '_seasonal'
+            ]]
+        )
+
+        data[column + '_contextual_anomalies_isolation'] = \
+            model.detect_contextual_anomalies(target_features) if column + '_seasonality_label' == 1 else \
+            model.detect_point_anomalies(
+                data[column + '_residual'],
+                configuration.threshold,
+                configuration.window_size
+            )
+
         
-    data['par_model'] = 'ENSEMBLE_MODEL_V3'
+    data['par_model'] = 'ENSEMBLE_MODEL_V1' 
     
     data['is_outlier'] = data['failed_count_point_anomalies_result'].astype(str)
     
     data['feature_1'] = data['count']
     
     data['feature_2'] = data['failed_count']
-    
-    data['feature_3'] = data['failed_count_rolling_std']
+     
+    data['feature_3'] = data['failed_count_residual'] 
             
     data['feature_4'] = data['count_point_anomalies_result']
     

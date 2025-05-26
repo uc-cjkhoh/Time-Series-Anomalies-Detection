@@ -72,4 +72,3 @@ def detect_contextual_anomalies(data, metric=np.mean):
 
 def detect_collective_anomalies():
     pass
-
