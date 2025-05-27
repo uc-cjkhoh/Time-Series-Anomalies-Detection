@@ -47,7 +47,7 @@ class Configuration:
         self.must_have_features = ['dt', 'tx_hour', 'count', 'mcc_mnc', 'rat_type', 'par_year', 'par_month', 'par_date', 'par_bound_type']
         
         # self.target_countries = [505,528,456,460,454,404,510,440,530,515,420,525,450,466,520,286,424,234,310,452]
-        self.target_countries = [234,286,525]
+        self.target_countries = [234,525]
     
     def import_python(self):
         # import all custom python modules
@@ -102,7 +102,7 @@ def execute_detection(spark_session, data, configuration):
      
     for feature in feature_to_target:
         data[feature + '_point_anomalies_result'] = np.where(
-            model.detect_point_anomalies(data[feature], configuration.threshold, configuration.window_size) == 2,
+            model.detect_point_anomalies(data[feature], configuration.threshold, configuration.window_size * configuration.no_of_loop) == 2,
             1,
             0
         )
@@ -115,35 +115,35 @@ def execute_detection(spark_session, data, configuration):
     for column in feature_to_target:
         stl_decompose = STL(data['smoothed_' + column], period=configuration.window_size * configuration.no_of_loop, seasonal_deg=0, trend_deg=0, low_pass_deg=0, robust=True).fit()
         
-        data[column + '_seasonal'] = stl_decompose.seasonal 
-        data[column + '_trend'] = stl_decompose.trend 
+        data[column + '_seasonal'] = stl_decompose.seasonal
+        data[column + '_trend'] = stl_decompose.trend
         data[column + '_residual'] = stl_decompose.resid
         
         data['expected_' + column] = stl_decompose.trend + stl_decompose.seasonal
-        
-        data[column + '_rolling_std'] = data['smoothed_' + column].rolling(window=configuration.window_size * configuration.no_of_loop, min_periods=1).std()
-        data[column + '_rolling_mean'] = data['smoothed_' + column].rolling(window=configuration.window_size * configuration.no_of_loop, min_periods=1).mean()            
-        
-        has_seasonality = util.check_seasonality(data[column], period=configuration.window_size * configuration.no_of_loop)
-        data[column + '_seasonality_label'] = 1 if has_seasonality else 0
+         
+        data[column + '_seasonality_label'] = util.check_seasonality(data[column], period=configuration.window_size * configuration.no_of_loop)
+          
+        data[column + '_rolling_std'] = data[column + '_residual'].rolling(window=configuration.window_size * configuration.no_of_loop, min_periods=1).std()
           
         target_features = scaler.fit_transform(
             data[[
-                column + '_residual',
-                column + '_seasonal'
+                'expected_' + column,
+                column + '_rolling_std'
             ]]
         )
+        
+        data[column + '_contextual_anomalies_isolation'] = np.where(
+            data[column + '_seasonality_label'] == 1,
+            model.detect_point_anomalies(data[column + '_residual'], configuration.threshold, configuration.window_size * configuration.no_of_loop),
+            data[column + '_point_anomalies_result']
+        )
 
-        data[column + '_contextual_anomalies_isolation'] = \
-            model.detect_contextual_anomalies(target_features) if column + '_seasonality_label' == 1 else \
-            model.detect_point_anomalies(
-                data[column + '_residual'],
-                configuration.threshold,
-                configuration.window_size
-            )
+
+    for column in feature_to_target:
+        data[column + '_final_result'] = data[column + '_point_anomalies_result'] + data[column + '_contextual_anomalies_isolation']
 
         
-    data['par_model'] = 'ENSEMBLE_MODEL_V1' 
+    data['par_model'] = 'ENSEMBLE_MODEL_V6'
     
     data['is_outlier'] = data['failed_count_point_anomalies_result'].astype(str)
     
@@ -151,7 +151,7 @@ def execute_detection(spark_session, data, configuration):
     
     data['feature_2'] = data['failed_count']
      
-    data['feature_3'] = data['failed_count_residual'] 
+    data['feature_3'] = data['failed_count_final_result']
             
     data['feature_4'] = data['count_point_anomalies_result']
     

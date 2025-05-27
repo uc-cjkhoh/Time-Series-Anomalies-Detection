@@ -11,6 +11,7 @@ from sklearn.preprocessing import MinMaxScaler
 from statsmodels.tsa.stattools import acf 
 from statsmodels.tsa.seasonal import STL  
 
+
 def replace_point_anomalies(data: pd.Series, point_anomalies_labels: pd.Series, window_size: int = 5) -> pd.DataFrame:
     """
     Replace the confirm point anomalies by Moving Average
@@ -61,15 +62,8 @@ def check_seasonality(data: pd.Series, period: int) -> bool:
 
     Returns:
         bool: True if the data has seasonality, False otherwise
-    """ 
-    # check if a series of data has seasonality, 1 for yes, 0 for no
-    # no_of_cycle = 5
-    
-    # acf_result = acf(data, nlags=period*no_of_cycle)
-    
-    # has_seasonality = True if acf_result[np.arange(period, period*no_of_cycle, period)].mean() >= 0.5 else False
-      
+    """  
     stl = STL(data, period=period).fit()
-    has_seasonality = True if max(0, 1 - (np.var(stl.resid) / np.var(stl.resid + stl.seasonal))) > 0.5 else False
+    has_seasonality = 1 if max(0, 1 - (np.var(stl.resid) / np.var(stl.resid + stl.seasonal))) > 0.5 else 0
       
     return has_seasonality 

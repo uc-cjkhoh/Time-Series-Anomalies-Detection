@@ -59,16 +59,7 @@ def detect_contextual_anomalies(data, metric=np.mean):
     # isolation forest
     if_model = IsolationForest()
     isolation_forest_result =  pd.Series(np.where(if_model.fit_predict(data) == -1, 1, 0))
-        
-    temp = isolation_forest_result.copy()
-    anomaly_index = np.where(isolation_forest_result == 1)[0].reshape(-1, 1)
+         
+    return isolation_forest_result 
     
-    db = DBSCAN(eps=5, min_samples=1).fit(anomaly_index)
-    
-    temp.loc[isolation_forest_result == 1] = db.labels_
-
-    return isolation_forest_result, temp
-    
-
-def detect_collective_anomalies():
-    pass
+ 
