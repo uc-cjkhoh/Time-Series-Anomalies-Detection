@@ -1,7 +1,8 @@
 from statsmodels.tsa.seasonal import STL, seasonal_decompose 
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col
-from sklearn.preprocessing import MinMaxScaler  
+from sklearn.preprocessing import MinMaxScaler   
+from scipy.signal import savgol_filter
 from tqdm import tqdm
 
 import logging 
@@ -34,20 +35,18 @@ class Configuration:
             '/unified/user/cj/python_module/anomaly_detection_v2/query/succ_rate.txt'
         ] 
          
-        # how many data point a day. Eg 24 if granularity is hourly 
+        # number of hours
         self.no_of_loop = 24
         
-        # data point for one cycle 
+        # window size for one hours 
         self.window_size = 12
         
         self.threshold = 3
         
-        self.target_column = 'success_rate' # either success_rate or total_count
-        
         self.must_have_features = ['dt', 'tx_hour', 'count', 'mcc_mnc', 'rat_type', 'par_year', 'par_month', 'par_date', 'par_bound_type']
         
         # self.target_countries = [505,528,456,460,454,404,510,440,530,515,420,525,450,466,520,286,424,234,310,452]
-        self.target_countries = [234,525]
+        self.target_countries = [234, 505, 525] 
     
     def import_python(self):
         # import all custom python modules
@@ -89,63 +88,48 @@ def insert_into_hdfs(spark_session, data):
 
 
 def execute_detection(spark_session, data, configuration): 
-    logging.info(f"===== Preprocessing Data")     
-    
     # convert to datetime
     data['dt'] = pd.to_datetime(data['dt'])
     
     # find failed transaction count
     data['failed_count'] = data['total_count'] - data['count']
        
-    # 1. Point Anomalies  
-    feature_to_target = ['count', 'failed_count'] 
-     
-    for feature in feature_to_target:
-        data[feature + '_point_anomalies_result'] = np.where(
-            model.detect_point_anomalies(data[feature], configuration.threshold, configuration.window_size * configuration.no_of_loop) == 2,
-            1,
-            0
-        )
-         
-        # replace point anomalies with mean
-        data['smoothed_' + feature] = util.replace_point_anomalies(data[feature], data[feature + '_point_anomalies_result'], configuration.window_size)
-     
-    # 2. Contextual Anomalies
-    scaler = MinMaxScaler()
+    feature_to_target = ['count', 'failed_count']   
     for column in feature_to_target:
-        stl_decompose = STL(data['smoothed_' + column], period=configuration.window_size * configuration.no_of_loop, seasonal_deg=0, trend_deg=0, low_pass_deg=0, robust=True).fit()
+        smoothed_stl = STL(data[column], period=configuration.window_size * configuration.no_of_loop, robust=True).fit()
+        data['smoothed_' + column + '_residual'] = smoothed_stl.resid
+        data['smoothed_' + column + '_seasonal'] = smoothed_stl.seasonal
+        data['smoothed_' + column + '_trend'] = smoothed_stl.trend
         
-        data[column + '_seasonal'] = stl_decompose.seasonal
-        data[column + '_trend'] = stl_decompose.trend
-        data[column + '_residual'] = stl_decompose.resid
-        
-        data['expected_' + column] = stl_decompose.trend + stl_decompose.seasonal
-         
         data[column + '_seasonality_label'] = util.check_seasonality(data[column], period=configuration.window_size * configuration.no_of_loop)
-          
-        data[column + '_rolling_std'] = data[column + '_residual'].rolling(window=configuration.window_size * configuration.no_of_loop, min_periods=1).std()
-          
-        target_features = scaler.fit_transform(
-            data[[
-                'expected_' + column,
-                column + '_rolling_std'
-            ]]
+        # data[column + '_trend_label'] = util.check_trend(data[column], period=configuration.window_size * configuration.no_of_loop)
+         
+        # point anomalies detection
+        point_abnormal = np.where(
+            model.detect_point_anomalies(
+                data[column], 
+                configuration.threshold, 
+                configuration.window_size
+            ) == 2,
+            1, 
+            0
+        )   
+        
+        constant_result, data[column + '_moving_result'] = model.detect_contextual_anomalies(
+            data['smoothed_' + column + '_residual'],
+            2,
+            configuration.window_size # half day
         )
         
-        data[column + '_contextual_anomalies_isolation'] = np.where(
-            data[column + '_seasonality_label'] == 1,
-            model.detect_point_anomalies(data[column + '_residual'], configuration.threshold, configuration.window_size * configuration.no_of_loop),
-            data[column + '_point_anomalies_result']
-        )
-
-
-    for column in feature_to_target:
-        data[column + '_final_result'] = data[column + '_point_anomalies_result'] + data[column + '_contextual_anomalies_isolation']
-
-        
+        data[column + '_final_result'] = np.where(
+            data[column + '_seasonality_label'] > 0.5, 
+            constant_result + point_abnormal, 
+            point_abnormal
+        ) 
+    
     data['par_model'] = 'ENSEMBLE_MODEL_V6'
     
-    data['is_outlier'] = data['failed_count_point_anomalies_result'].astype(str)
+    data['is_outlier'] = data['count_final_result'].astype(str)
     
     data['feature_1'] = data['count']
     
@@ -153,15 +137,15 @@ def execute_detection(spark_session, data, configuration):
      
     data['feature_3'] = data['failed_count_final_result']
             
-    data['feature_4'] = data['count_point_anomalies_result']
+    data['feature_4'] = data['smoothed_count_trend']
     
-    data['feature_5'] = data['count_contextual_anomalies_isolation']
+    data['feature_5'] = data['smoothed_count_seasonal']
     
-    data['feature_6'] = data['failed_count_contextual_anomalies_isolation']
+    data['feature_6'] = data['smoothed_count_residual']
     
-    data['feature_7'] = data['count_seasonality_label']
+    data['feature_7'] = data['count_moving_result']
     
-    data['feature_8'] = data['failed_count_seasonality_label']
+    data['feature_8'] = data['failed_count_moving_result']
     
     data_to_ingest = data[
         [
@@ -185,7 +169,7 @@ def execute_detection(spark_session, data, configuration):
             'par_date', 
             'par_bound_type'
         ]
-    ]
+    ]  # skip the first 24 hours of data
      
     insert_into_hdfs(spark_session, data_to_ingest)
          

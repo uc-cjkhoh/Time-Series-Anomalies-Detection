@@ -64,6 +64,21 @@ def check_seasonality(data: pd.Series, period: int) -> bool:
         bool: True if the data has seasonality, False otherwise
     """  
     stl = STL(data, period=period).fit()
-    has_seasonality = 1 if max(0, 1 - (np.var(stl.resid) / np.var(stl.resid + stl.seasonal))) > 0.5 else 0
-      
-    return has_seasonality 
+    
+    return max(0, 1 - (np.var(stl.resid) / np.var(stl.resid + stl.seasonal))) 
+    # print(1 - (np.var(stl.resid) / np.var(stl.resid + stl.seasonal)))
+    
+
+def check_trend(data: pd.Series, period: int) -> bool:
+    """
+    Check if the data has seasonality using STL decomposition.
+    
+    Args:
+        data (pd.DataFrame): The input data to be checked
+        period (int, optional): The period for seasonal decomposition.
+
+    Returns:
+        bool: True if the data is trended, False otherwise
+    """  
+    stl = STL(data, period=period).fit()
+    return max(0, 1 - (np.var(stl.resid) / np.var(stl.resid + stl.trend))) 
