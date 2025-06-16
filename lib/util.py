@@ -1,55 +1,29 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Fri Jan 19 15:38:15 2024 
-@author: cj_khoh
-"""
-
 import numpy as np
 import pandas as pd
 
-from sklearn.preprocessing import MinMaxScaler
-from statsmodels.tsa.stattools import acf 
+from scipy import ndimage  
 from statsmodels.tsa.seasonal import STL  
 
 
-def replace_point_anomalies(data: pd.Series, point_anomalies_labels: pd.Series, window_size: int = 5) -> pd.DataFrame:
+def replace_point_anomalies(target_data: pd.Series, point_result: pd.Series, replacement_data: pd.Series) -> pd.Series:
     """
-    Replace the confirm point anomalies by Moving Average
-
-    Args:
-        data (pd.DataFrame): the target data
-        point_anomalies_labels (np.array): the result from point anomalies detection
-        window_size (int): the window size to operate moving average
-
-    Returns:
-        pd.DataFrame: return the dataset without point anomalies
-    """
-    rolling_mean = data.rolling(window_size, min_periods=1).mean()
-    data = np.where(point_anomalies_labels.values != 0, data, rolling_mean)
-    
-    return data
-
-   
-# contextual anomaly: scale data & smooth data 
-def smoothing(data: pd.Series, window_size: int = 5) -> pd.Series:
-    """
-    Smooth the data using a moving average filter.
+    Replace point anomalies in the target data with values from the replacement data.
     
     Args:
-        data (pd.DataFrame): The input data to be smoothed
-        window_size (int, optional): The size of the moving window. Defaults to 5.
+        target_data (pd.Series): The data in which anomalies are to be replaced
+        replacement_data (pd.Series): The data to replace anomalies with
 
     Returns:
-        pd.DataFrame: The smoothed data
+        pd.Series: The target data with anomalies replaced
     """ 
-     
-    scaler = MinMaxScaler()
-      
-    data = pd.Series(scaler.fit_transform(data.values.reshape(-1, 1)).flatten())
-    data = data.rolling(window=window_size, min_periods=1).mean()
+    # Ensure both series are of the same length
+    if len(target_data) != len(replacement_data):
+        raise ValueError("Target and replacement data must have the same length.")
     
-    return data 
-
+    replaced_column = np.where(point_result == 1, replacement_data, target_data)
+    
+    return pd.Series(replaced_column, index=target_data.index)
+  
 
 # check if the data has seasonality
 def check_seasonality(data: pd.Series, period: int) -> bool:
@@ -69,16 +43,40 @@ def check_seasonality(data: pd.Series, period: int) -> bool:
     # print(1 - (np.var(stl.resid) / np.var(stl.resid + stl.seasonal)))
     
 
+# check if the data is strongly trend or not
 def check_trend(data: pd.Series, period: int) -> bool:
     """
-    Check if the data has seasonality using STL decomposition.
+    Check if the data is strongly trend using STL decomposition.
     
     Args:
         data (pd.DataFrame): The input data to be checked
-        period (int, optional): The period for seasonal decomposition.
+        period (int, optional): The period for trend decomposition.
 
     Returns:
-        bool: True if the data is trended, False otherwise
+        bool: True if the data is strongly trend, False otherwise
     """  
     stl = STL(data, period=period).fit()
-    return max(0, 1 - (np.var(stl.resid) / np.var(stl.resid + stl.trend))) 
+    
+    return max(0, 1 - (np.var(stl.resid) / np.var(stl.resid + stl.trend)))  
+    
+
+# calculate the density of anomalies
+def anomaly_density(anomaly_result, window_size, threshold):
+    """
+    Calculate the density of anomalies and filter them based on a threshold.
+
+    Args:
+        anomaly_result (pd.Series): the orginal result from anomaly detection
+        window_size (int): the local window size
+        threshold (float): the number of stndard deviation away from the median
+
+    Returns:
+        _type_: _description_
+    """
+    
+    forward_local = anomaly_result.rolling(window_size, center=True, min_periods=1).mean()  
+    backward_local = anomaly_result[::-1].rolling(window_size, center=True, min_periods=1).mean()
+    
+    final_score = np.maximum(forward_local, backward_local[::-1])
+   
+    return np.where(anomaly_result.astype(bool) & (final_score > threshold), 1, 0)

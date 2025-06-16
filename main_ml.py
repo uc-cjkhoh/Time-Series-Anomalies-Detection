@@ -1,11 +1,8 @@
-from statsmodels.tsa.seasonal import STL, seasonal_decompose 
+from statsmodels.tsa.seasonal import STL
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col
-from sklearn.preprocessing import MinMaxScaler   
-from scipy.signal import savgol_filter
+from pyspark.sql.functions import col   
 from tqdm import tqdm
-
-import logging 
+ 
 import warnings
 import pandas as pd
 import numpy as np 
@@ -34,14 +31,13 @@ class Configuration:
         self.sql_files = [
             '/unified/user/cj/python_module/anomaly_detection_v2/query/succ_rate.txt'
         ] 
-         
-        # number of hours
-        self.no_of_loop = 24
-        
+           
         # window size for one hours 
-        self.window_size = 12
+        self.window_size = 288
         
-        self.threshold = 3
+        self.two_sigma = 1.96
+        
+        self.three_sigma = 2.58
         
         self.must_have_features = ['dt', 'tx_hour', 'count', 'mcc_mnc', 'rat_type', 'par_year', 'par_month', 'par_date', 'par_bound_type']
         
@@ -55,16 +51,31 @@ class Configuration:
 
               
 def read_sql_from_file(file_path, mcc): 
+    """
+    Read or import SQL Query from a text file.
+
+    Args:
+        file_path (str): the path to the Query file
+        mcc (int): Country code insert into the query
+
+    Returns:
+        str: The SQL query
+    """
+    
     with open(file_path, 'r') as file:
         sql_query = file.read()
     return sql_query.format(mcc, mcc)
-
-
-def execute_sql(spark, sql_query): 
-    return spark.sql(sql_query)
-  
+ 
 
 def insert_into_hdfs(spark_session, data):
+    """
+    Insert data into HDFS in parquet format.
+
+    Args:
+        spark_session (object): Spark session to use for writing data
+        data (Dataframe): the data to be inserted into HDFS
+    """
+    
     spark_df = spark_session.createDataFrame(data) 
 
     spark_df = spark_df.withColumn("rat_type", col("rat_type").cast("int"))
@@ -88,46 +99,59 @@ def insert_into_hdfs(spark_session, data):
 
 
 def execute_detection(spark_session, data, configuration): 
+    """
+    The main function to execute the anomaly detection process
+
+    Args:
+        spark_session (object): Spark session to use for processinng data
+        data (dataframe): the data to be processed 
+        configuration (object): user defined configuration or settings
+    """
+    
     # convert to datetime
     data['dt'] = pd.to_datetime(data['dt'])
     
     # find failed transaction count
     data['failed_count'] = data['total_count'] - data['count']
-       
+      
     feature_to_target = ['count', 'failed_count']   
     for column in feature_to_target:
-        smoothed_stl = STL(data[column], period=configuration.window_size * configuration.no_of_loop, robust=True).fit()
-        data['smoothed_' + column + '_residual'] = smoothed_stl.resid
-        data['smoothed_' + column + '_seasonal'] = smoothed_stl.seasonal
-        data['smoothed_' + column + '_trend'] = smoothed_stl.trend
+        stl = STL(data[column], period=configuration.window_size, seasonal_deg=0, trend_deg=0, low_pass_deg=0, robust=True).fit()
+        data[column + '_residual'] = stl.resid
+        data[column + '_seasonal'] = stl.seasonal
+        data[column + '_trend'] = stl.trend
         
-        data[column + '_seasonality_label'] = util.check_seasonality(data[column], period=configuration.window_size * configuration.no_of_loop)
-        # data[column + '_trend_label'] = util.check_trend(data[column], period=configuration.window_size * configuration.no_of_loop)
-         
+        data[column + '_seasonality_label'] = seasonality_label = util.check_seasonality(data[column], period=configuration.window_size)
+        data[column + '_trend_label'] = trend_label = util.check_trend(data[column], period=configuration.window_size)
+          
         # point anomalies detection
-        point_abnormal = np.where(
-            model.detect_point_anomalies(
-                data[column], 
-                configuration.threshold, 
+        data[column + '_point_anomalies'] = point_abnormal = \
+            model.detect_extreme_value(
+                data[column].copy(),
+                configuration.three_sigma, # higher sigma to capture more extreme value  
                 configuration.window_size
-            ) == 2,
-            1, 
-            0
-        )   
+            ) 
         
-        constant_result, data[column + '_moving_result'] = model.detect_contextual_anomalies(
-            data['smoothed_' + column + '_residual'],
-            2,
-            configuration.window_size # half day
-        )
+        # contextual anomalies detection 
+        contextual_anomalies = model.detect_residual_outlier(
+            data[column].copy(),
+            configuration.two_sigma,
+            configuration.window_size,
+            trend_label,
+            seasonality_label
+        )  
         
-        data[column + '_final_result'] = np.where(
-            data[column + '_seasonality_label'] > 0.5, 
-            constant_result + point_abnormal, 
-            point_abnormal
-        ) 
+        # remove anomalies not in dense
+        # contextual_anomalies = util.anomaly_density(
+        #     contextual_anomalies,
+        #     configuration.window_size,
+        #     threshold=0.1
+        # )
+          
+        data[column + '_final_result'] = point_abnormal + contextual_anomalies
+     
     
-    data['par_model'] = 'ENSEMBLE_MODEL_V6'
+    data['par_model'] = 'ENSEMBLE_MODEL_TEST'
     
     data['is_outlier'] = data['count_final_result'].astype(str)
     
@@ -136,16 +160,16 @@ def execute_detection(spark_session, data, configuration):
     data['feature_2'] = data['failed_count']
      
     data['feature_3'] = data['failed_count_final_result']
-            
-    data['feature_4'] = data['smoothed_count_trend']
     
-    data['feature_5'] = data['smoothed_count_seasonal']
+    data['feature_4'] = data['count_trend']
     
-    data['feature_6'] = data['smoothed_count_residual']
+    data['feature_5'] = data['count_seasonal']
     
-    data['feature_7'] = data['count_moving_result']
+    data['feature_6'] = data['count_residual']
     
-    data['feature_8'] = data['failed_count_moving_result']
+    data['feature_7'] = data['failed_count_trend']
+    
+    data['feature_8'] = data['failed_count_seasonal']
     
     data_to_ingest = data[
         [
@@ -169,12 +193,21 @@ def execute_detection(spark_session, data, configuration):
             'par_date', 
             'par_bound_type'
         ]
-    ]  # skip the first 24 hours of data
+    ][configuration.window_size:]  # skip the first 24 hours of data
      
     insert_into_hdfs(spark_session, data_to_ingest)
          
       
 def start_action(spark_session, data_source, configuration):
+    """
+    Preprocess the data and group the into subset based on mcc, mnc, rat type and bound type.
+
+    Args:
+        spark_session (object): Spark session initiated 
+        data_source (dataframe): data extracted from SQL query
+        configuration (object): user fdefined configuration or settings
+    """
+    
     mcc_list = data_source.get_mcc_list()
     bound_list = data_source.get_bound_list()
     rat_list = data_source.get_rat_list() 
@@ -183,14 +216,14 @@ def start_action(spark_session, data_source, configuration):
         for bound_type in bound_list:
             for rat_type in rat_list:   
                 # get data filtered by mcc_mnc, bound_type, rat_type
-                data = data_source.get_data(mcc_mnc, bound_type, rat_type)
+                data = data_source.get_data(mcc_mnc, bound_type, rat_type) 
                 
                 if data.empty:
                     print(f"===== Skipping - No Data Found in MCC-MNC: {mcc_mnc}, Bound Type: {bound_type}, RAT Type: {rat_type}") 
                     continue
                 
                 print(f"===== Now running - MCC-MNC: {mcc_mnc}, Bound Type: {bound_type}, RAT Type: {rat_type}") 
-                 
+                  
                 # data['success_rate_detrended'] = make_stationary(data['success_rate']) 
                 # data['total_count_detrended'] = make_stationary(data['total_count'])
                  
@@ -219,8 +252,7 @@ if __name__ == "__main__":
             
             try:
                 # get all data from sql 
-                data = dataset.Dataset(
-                    window_size=configuration.window_size, 
+                data = dataset.Dataset( 
                     query=sql_query   
                 ) 
                 
