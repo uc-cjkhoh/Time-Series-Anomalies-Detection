@@ -95,7 +95,7 @@ with
                                 where
                                     (
                                         par_date >= 20250601
-                                        and par_date <= 20250615
+                                        and par_date <= 20250630
                                     )
                                     and par_bound_type = 2
                                     and op_code IN (2, 23, 316)

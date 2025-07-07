@@ -4,86 +4,129 @@ import util
    
 from scipy.signal import savgol_filter
 from statsmodels.tsa.seasonal import STL 
+from scipy.stats import median_abs_deviation, skew
+from sklearn.ensemble import IsolationForest
+from sklearn.cluster import DBSCAN
 
-
-def detect_extreme_value(data: pd.Series, threshold: int, window_size: int) -> np.ndarray: 
-    """
-    Detect point anomalies in the data using a rolling mean and standard deviation.
-
-    Args:
-        data (pd.Series): The input data to be analyzed
-        threshold (int): The threshold for anomaly detection
-        window_size (int): The size of the rolling window
-
-    Returns:
-        np.ndarray: An array indicating the presence of anomalies (1 for anomaly, 0 for normal)
-    """ 
-    # mean_12_loop = savgol_filter(data, window_length=window_size * 12, polyorder=2, mode='mirror')
-    trend = savgol_filter(data, window_length=window_size, polyorder=2, mode='mirror')
+ 
+def get_all_anomalies(residual, seasonal, trend, lower_q=0.01, upper_q=0.99): 
+    mad = median_abs_deviation(residual, nan_policy='omit')
+    Modified_Z = (residual - residual.median()) / (mad * 1.4826)
+    
+    # adaptive quantile-based threshold
+    lower = Modified_Z.quantile(lower_q)
+    upper = Modified_Z.quantile(upper_q)
      
-    # stl_decompose = STL(data, period=window_size, robust=True).fit()
+    indicator_1 = pd.Series( 
+        np.where(
+            (Modified_Z < lower) | (Modified_Z > upper), 1, 0
+        )
+    ) 
     
-    # trend = stl_decompose.trend 
+    return indicator_1
     
-    local_std = data.rolling(window=window_size, min_periods=1).std().clip(lower=data.std())
-    
-    # local_mean = pd.Series(trend).rolling(window=window_size * 24, min_periods=1).mean()
      
+def threshold_based_detector(data: pd.Series, window_size: int, threshold: float = 1.96, lower_q: float = 0.05, upper_q: float = 0.95) -> bool:    
+    trend = STL(data, period=window_size // 24, robust=True).fit().trend
+         
+    diff = data - trend
+    
+    # what shoule be the optimal minimal std ? 
+    local_std = data.rolling(window=window_size, min_periods=1).std().bfill().ffill().clip(lower=0.5 * np.std(diff))
+    
     lower_boundary = trend - (threshold * local_std)
     upper_boundary = trend + (threshold * local_std)
 
     # check if the data points are within the boundaries
-    result = ~((lower_boundary <= data) & (data <= upper_boundary))
-    result = np.where(result, 2, 0)  # Convert boolean to 2 for anomalies
+    indicator_1 = ~((lower_boundary <= data) & (data <= upper_boundary))
    
-    return pd.Series(result)
+    # ===============================================================
+    
+    lower_quantile = pd.Series(diff).rolling(window=window_size, min_periods=1).apply(
+        lambda x : np.quantile(x, lower_q)
+    ).bfill().ffill()
+    
+    indicator_2 = (diff > lower_quantile)
+   
+    return indicator_1 & indicator_2 
 
 
-def detect_residual_outlier(data, threshold, window_size, trend_strength, seasonality_strength):
-    """
-    Detect contextual anomalies in the data using various models.
-    Formula: LOESS(data) ± (sigma * median std of (residual + trend / seasonal [if strength >= 0.4]))
-
-    Args:
-        data (pd.Series): The input data to be analyzed
-        threshold (float): The number of standard deviation away from mean
-
-    Returns:
-        np.ndarray: An array indicating the presence of anomalies (1 for anomaly, 0 for normal)
-    """ 
+def mad_based_z_score(data, window_size, lower_q=0.025, upper_q=0.975) -> bool : 
+    polynomial_fit = STL(data, period=window_size, robust=True).fit().trend 
+    
+    # Calculate deviation from trend
+    deviation = data - polynomial_fit
+    
+    # create a MAD-based Z-score on the deviations)
+    mad = median_abs_deviation(deviation)
+    # mad = pd.Series(deviation).rolling(window_size, min_periods=1).apply(
+    #     lambda x: median_abs_deviation(x, nan_policy='omit')
+    # ).bfill().ffill()
      
-    stl_decompose = STL(data, period=window_size, seasonal_deg=0, trend_deg=0, low_pass_deg=0, robust=True).fit() 
-    
-    target_data = data
-    x = np.zeros(data.shape[0])
-    y = pd.Series(stl_decompose.resid)
-
-    if trend_strength >= 0.4:
-        x += stl_decompose.trend
-        y += stl_decompose.trend
-    else:
-        target_data -= stl_decompose.trend
-    
-    if seasonality_strength >= 0.4:
-        x += stl_decompose.seasonal
-        y += stl_decompose.seasonal
-    else:
-        target_data -= stl_decompose.seasonal
-    
-    if trend_strength < 0.4 and seasonality_strength < 0.4:
-        return x
-    
-    y = y.rolling(window=window_size, min_periods=1).std()
-        
-    lower_bound = x - threshold * y
-    upper_bound = x + threshold * y
+    deviation_median = deviation.median()
+    # deviation_median = pd.Series(deviation).rolling(window_size, min_periods=1).median()
      
-    # median = ndimage.median(data)
-    # constant_std = data.std()  
-        
-    # check if the data points are within the boundaries
-    result = ~((lower_bound <= target_data) & (target_data <= upper_bound))
-    final_result = np.where(result, 1, 0)  # Convert boolean to 2 for anomalies
+    Modified_Z = (deviation - deviation_median) / (mad * 1.4826)
     
+    # adaptive quantile-based threshold 
+    lower = Modified_Z.quantile(lower_q) 
+    upper = Modified_Z.quantile(upper_q)
     
-    return pd.Series(final_result) 
+    return (Modified_Z < lower) | (Modified_Z > upper), Modified_Z
+
+
+def get_contextual(data, all_anomalies, window_size, lower_q=0.025, upper_q=0.975): 
+    # Use STL decomposition for better seasonal pattern recognition 
+    decompose = STL(data, period=window_size, robust=True).fit()
+    expected_value = decompose.trend + decompose.seasonal
+     
+    smoothed_data = STL(data, period=window_size // 24, robust=True).fit().trend   
+    
+    # Calculate deviation from trend
+    deviation = smoothed_data - expected_value
+      
+    mad = median_abs_deviation(deviation)
+    # mad = pd.Series(deviation).rolling(window_size, min_periods=1).apply(
+    #     lambda x: median_abs_deviation(x, nan_policy='omit')
+    # ).bfill().ffill()
+     
+    deviation_median = deviation.median()
+    # deviation_median = pd.Series(deviation).rolling(window_size, min_periods=1).median()
+     
+    Modified_Z = (deviation - deviation_median) / (mad * 1.4826) 
+    
+    # adaptive quantile-based threshold
+    lower = Modified_Z.quantile(lower_q)
+    upper = Modified_Z.quantile(upper_q)
+    
+    # determine if a data point is not in IQR
+    out_of_mad = (Modified_Z < lower) | (Modified_Z > upper)
+    
+    contextual = np.where(all_anomalies.astype(bool) & (out_of_mad), 1, 0)
+    all_anomalies += contextual 
+     
+    # ======================================== 
+    
+    # anomalies_idx = np.where(all_anomalies == 1)[0]
+    # idx_diff = np.abs(pd.Series(anomalies_idx).diff().fillna(0))
+    
+    # # seasonal_strength = util.check_seasonality(data, period=window_size)
+    # # trend_strength = util.check_trend(data, period=window_size)     
+    # # strength = max(seasonal_strength, trend_strength)
+         
+    # eps = max(1, idx_diff.sum() / len(anomalies_idx))
+    # min_samples = (len(all_anomalies[all_anomalies == 1]) // 24) // eps
+     
+    # print("EPS: ", eps)
+    # print("Min Samples: ", min_samples)
+    
+    # db = DBSCAN(
+    #     eps=eps,
+    #     min_samples=min_samples
+    # ).fit_predict(anomalies_idx.reshape(-1, 1))
+    
+    # db_result = np.where(db == -1, 1, 0)
+    
+    # all_anomalies[anomalies_idx] += db_result
+    
+    return pd.Series(all_anomalies), smoothed_data, expected_value, Modified_Z

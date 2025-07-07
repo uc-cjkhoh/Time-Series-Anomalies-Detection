@@ -1,30 +1,12 @@
 import numpy as np
 import pandas as pd
+import model
 
 from scipy import ndimage  
 from statsmodels.tsa.seasonal import STL  
+from scipy.stats import median_abs_deviation, percentileofscore
 
-
-def replace_point_anomalies(target_data: pd.Series, point_result: pd.Series, replacement_data: pd.Series) -> pd.Series:
-    """
-    Replace point anomalies in the target data with values from the replacement data.
-    
-    Args:
-        target_data (pd.Series): The data in which anomalies are to be replaced
-        replacement_data (pd.Series): The data to replace anomalies with
-
-    Returns:
-        pd.Series: The target data with anomalies replaced
-    """ 
-    # Ensure both series are of the same length
-    if len(target_data) != len(replacement_data):
-        raise ValueError("Target and replacement data must have the same length.")
-    
-    replaced_column = np.where(point_result == 1, replacement_data, target_data)
-    
-    return pd.Series(replaced_column, index=target_data.index)
   
-
 # check if the data has seasonality
 def check_seasonality(data: pd.Series, period: int) -> bool:
     """
@@ -64,19 +46,42 @@ def check_trend(data: pd.Series, period: int) -> bool:
 def anomaly_density(anomaly_result, window_size, threshold):
     """
     Calculate the density of anomalies and filter them based on a threshold.
+    Optimized for adaptive windowing, edge handling, and index alignment.
 
     Args:
-        anomaly_result (pd.Series): the orginal result from anomaly detection
-        window_size (int): the local window size
-        threshold (float): the number of stndard deviation away from the median
+        anomaly_result (pd.Series): The original result from anomaly detection (binary or integer, 0/1/2).
+        window_size (int): The local window size (should be odd and >= 3). 
 
     Returns:
-        _type_: _description_
+        pd.Series: Filtered anomaly indicator (same index as input, 2 for kept anomaly, 0 otherwise).
     """
+    anomaly_result = pd.Series(anomaly_result)
+    n = len(anomaly_result)
     
-    forward_local = anomaly_result.rolling(window_size, center=True, min_periods=1).mean()  
-    backward_local = anomaly_result[::-1].rolling(window_size, center=True, min_periods=1).mean()
+    # Ensure window_size is odd and not greater than n
+    window = min(window_size, n)
+    if window < 3:
+        window = 3
+    if window % 2 == 0:
+        window += 1 if window + 1 <= n else -1
+
+    # Forward and backward rolling mean for density
+    forward_local = anomaly_result.rolling(window=window, min_periods=1, center=True).mean()
+    backward_local = anomaly_result[::-1].rolling(window=window, min_periods=1, center=True).mean()[::-1]
     
-    final_score = np.maximum(forward_local, backward_local[::-1])
-   
-    return np.where(anomaly_result.astype(bool) & (final_score > threshold), 1, 0)
+    # Take the maximum density from both directions
+    final_score = np.maximum(forward_local, backward_local)
+    
+    # Only keep anomalies with density above threshold
+    filtered = anomaly_result.astype(bool) & (final_score > threshold)
+    
+    # Return as Series with same index, 2 for anomaly, 0 otherwise
+    return pd.Series(np.where(filtered, 1, 0), index=anomaly_result.index)
+
+
+def get_quantiles_series(reference_data, target_value):
+    vectorized_percentile = np.vectorize(
+        lambda x: percentileofscore(reference_data, x) / 100
+    )
+    
+    return vectorized_percentile(target_value)

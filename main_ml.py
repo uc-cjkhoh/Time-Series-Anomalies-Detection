@@ -1,6 +1,7 @@
 from statsmodels.tsa.seasonal import STL
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col   
+from pyspark.sql.functions import col
+from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
  
 import warnings
@@ -33,7 +34,7 @@ class Configuration:
         ] 
            
         # window size for one hours 
-        self.window_size = 288
+        self.window_size = 289
         
         self.two_sigma = 1.96
         
@@ -42,7 +43,7 @@ class Configuration:
         self.must_have_features = ['dt', 'tx_hour', 'count', 'mcc_mnc', 'rat_type', 'par_year', 'par_month', 'par_date', 'par_bound_type']
         
         # self.target_countries = [505,528,456,460,454,404,510,440,530,515,420,525,450,466,520,286,424,234,310,452]
-        self.target_countries = [234, 505, 525] 
+        self.target_countries = [234,460,510,520,525] 
     
     def import_python(self):
         # import all custom python modules
@@ -116,42 +117,56 @@ def execute_detection(spark_session, data, configuration):
       
     feature_to_target = ['count', 'failed_count']   
     for column in feature_to_target:
-        stl = STL(data[column], period=configuration.window_size, seasonal_deg=0, trend_deg=0, low_pass_deg=0, robust=True).fit()
+        stl = STL(
+            data[column], 
+            period=configuration.window_size,
+            robust=True
+        ).fit()
+        
         data[column + '_residual'] = stl.resid
         data[column + '_seasonal'] = stl.seasonal
         data[column + '_trend'] = stl.trend
-        
-        data[column + '_seasonality_label'] = seasonality_label = util.check_seasonality(data[column], period=configuration.window_size)
-        data[column + '_trend_label'] = trend_label = util.check_trend(data[column], period=configuration.window_size)
+       
+        # scaler = StandardScaler()
           
-        # point anomalies detection
-        data[column + '_point_anomalies'] = point_abnormal = \
-            model.detect_extreme_value(
-                data[column].copy(),
-                configuration.three_sigma, # higher sigma to capture more extreme value  
-                configuration.window_size
-            ) 
+        indicator_1, mad_z_score = model.mad_based_z_score(
+            data[column + '_residual'],
+            configuration.window_size
+        )
         
-        # contextual anomalies detection 
-        contextual_anomalies = model.detect_residual_outlier(
-            data[column].copy(),
-            configuration.two_sigma,
+        indicator_1 = np.where(indicator_1, 2, 0)
+        data[column + '_rank_quantile'] = util.get_quantiles_series(
+            mad_z_score, mad_z_score
+        )
+          
+        indicator_2 = np.where(model.threshold_based_detector(
+            data[column + '_trend'].copy(),
             configuration.window_size,
-            trend_label,
-            seasonality_label
-        )  
+            configuration.two_sigma 
+        ), 1, 0)
         
-        # remove anomalies not in dense
-        # contextual_anomalies = util.anomaly_density(
-        #     contextual_anomalies,
-        #     configuration.window_size,
-        #     threshold=0.1
-        # )
+        indicator_3 = np.where(model.threshold_based_detector(
+            data[column + '_seasonal'].copy(),
+            configuration.window_size,
+            configuration.two_sigma
+        ), 1, 0)
+        
+        # Combine (e.g., logical OR)
+        indicator_2_3 = np.where((indicator_2 + indicator_3) > 0, 1, 0).astype(int)
+         
+        all_outlier = np.where((indicator_1 + indicator_2_3) > 0, 1, 0)
           
-        data[column + '_final_result'] = point_abnormal + contextual_anomalies
+        # remove anomalies not in dense
+        point_or_contextual, data[column + '_smoothed_data'], data[column + '_expected_data'], data[column + '_zscore'] = model.get_contextual(
+            data[column],
+            all_outlier, 
+            configuration.window_size
+        )
+         
+        data[column + '_final_result'] = point_or_contextual
      
     
-    data['par_model'] = 'ENSEMBLE_MODEL_TEST'
+    data['par_model'] = 'ENSEMBLE_MODEL_Z_SCORE'
     
     data['is_outlier'] = data['count_final_result'].astype(str)
     
@@ -161,15 +176,24 @@ def execute_detection(spark_session, data, configuration):
      
     data['feature_3'] = data['failed_count_final_result']
     
-    data['feature_4'] = data['count_trend']
+    data['feature_4'] = data['count_residual']
     
-    data['feature_5'] = data['count_seasonal']
+    # data['feature_5'] = data['count_smoothed_data']
+    # data['feature_5'] = STL(data['failed_count'].copy(), period=configuration.window_size // 24, robust=True).fit().trend
+    data['feature_5'] = data['count_rank_quantile']
     
-    data['feature_6'] = data['count_residual']
+    # data['feature_6'] = data['failed_count_smoothed_data']
+    # data['feature_6'] = STL(data['count'].copy(), period=configuration.window_size // 24, robust=True).fit().trend
+    data['feature_6'] = data['failed_count_rank_quantile']
     
-    data['feature_7'] = data['failed_count_trend']
+    data['feature_7'] = data['count_expected_data']
+    # data['feature_7'] = STL(data['count_seasonal'].copy() + data['count_trend'].copy(), period=configuration.window_size // 24, robust=True).fit().trend
+    # data['feature_5'] = data['count_expected_data']
     
-    data['feature_8'] = data['failed_count_seasonal']
+    data['feature_8'] = data['failed_count_expected_data']
+    # data['feature_8'] = STL(data['failed_count_seasonal'].copy() + data['failed_count_trend'].copy(), period=configuration.window_size // 24, robust=True).fit().trend
+    # data['feature_6'] = data['count_expected_seasonal']
+    
     
     data_to_ingest = data[
         [
@@ -193,7 +217,7 @@ def execute_detection(spark_session, data, configuration):
             'par_date', 
             'par_bound_type'
         ]
-    ][configuration.window_size:]  # skip the first 24 hours of data
+    ][configuration.window_size:]
      
     insert_into_hdfs(spark_session, data_to_ingest)
          
