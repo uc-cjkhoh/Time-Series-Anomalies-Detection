@@ -1,10 +1,9 @@
-from statsmodels.tsa.seasonal import STL, seasonal_decompose 
+from statsmodels.tsa.seasonal import STL
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col
-from sklearn.preprocessing import MinMaxScaler  
+from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
-
-import logging 
+ 
 import warnings
 import pandas as pd
 import numpy as np 
@@ -33,21 +32,18 @@ class Configuration:
         self.sql_files = [
             '/unified/user/cj/python_module/anomaly_detection_v2/query/succ_rate.txt'
         ] 
-         
-        # how many data point a day. Eg 24 if granularity is hourly 
-        self.no_of_loop = 24
+           
+        # window size for one hours 
+        self.window_size = 289
         
-        # data point for one cycle 
-        self.window_size = 12
+        self.two_sigma = 1.96
         
-        self.threshold = 3
-        
-        self.target_column = 'success_rate' # either success_rate or total_count
+        self.three_sigma = 2.58
         
         self.must_have_features = ['dt', 'tx_hour', 'count', 'mcc_mnc', 'rat_type', 'par_year', 'par_month', 'par_date', 'par_bound_type']
         
         # self.target_countries = [505,528,456,460,454,404,510,440,530,515,420,525,450,466,520,286,424,234,310,452]
-        self.target_countries = [234,286,525]
+        self.target_countries = [234,460,510,520,525] 
     
     def import_python(self):
         # import all custom python modules
@@ -56,16 +52,31 @@ class Configuration:
 
               
 def read_sql_from_file(file_path, mcc): 
+    """
+    Read or import SQL Query from a text file.
+
+    Args:
+        file_path (str): the path to the Query file
+        mcc (int): Country code insert into the query
+
+    Returns:
+        str: The SQL query
+    """
+    
     with open(file_path, 'r') as file:
         sql_query = file.read()
     return sql_query.format(mcc, mcc)
-
-
-def execute_sql(spark, sql_query): 
-    return spark.sql(sql_query)
-  
+ 
 
 def insert_into_hdfs(spark_session, data):
+    """
+    Insert data into HDFS in parquet format.
+
+    Args:
+        spark_session (object): Spark session to use for writing data
+        data (Dataframe): the data to be inserted into HDFS
+    """
+    
     spark_df = spark_session.createDataFrame(data) 
 
     spark_df = spark_df.withColumn("rat_type", col("rat_type").cast("int"))
@@ -89,79 +100,100 @@ def insert_into_hdfs(spark_session, data):
 
 
 def execute_detection(spark_session, data, configuration): 
-    logging.info(f"===== Preprocessing Data")     
+    """
+    The main function to execute the anomaly detection process
+
+    Args:
+        spark_session (object): Spark session to use for processinng data
+        data (dataframe): the data to be processed 
+        configuration (object): user defined configuration or settings
+    """
     
     # convert to datetime
     data['dt'] = pd.to_datetime(data['dt'])
     
     # find failed transaction count
     data['failed_count'] = data['total_count'] - data['count']
+      
+    feature_to_target = ['count', 'failed_count']   
+    for column in feature_to_target:
+        stl = STL(
+            data[column], 
+            period=configuration.window_size,
+            robust=True
+        ).fit()
+        
+        data[column + '_residual'] = stl.resid
+        data[column + '_seasonal'] = stl.seasonal
+        data[column + '_trend'] = stl.trend
        
-    # 1. Point Anomalies  
-    feature_to_target = ['count', 'failed_count'] 
-     
-    for feature in feature_to_target:
-        data[feature + '_point_anomalies_result'] = np.where(
-            model.detect_point_anomalies(data[feature], configuration.threshold, configuration.window_size) == 2,
-            1,
-            0
+        # scaler = StandardScaler()
+          
+        indicator_1, mad_z_score = model.mad_based_z_score(
+            data[column + '_residual'],
+            configuration.window_size
+        )
+        
+        indicator_1 = np.where(indicator_1, 2, 0)
+        data[column + '_rank_quantile'] = util.get_quantiles_series(
+            mad_z_score, mad_z_score
+        )
+          
+        indicator_2 = np.where(model.threshold_based_detector(
+            data[column + '_trend'].copy(),
+            configuration.window_size,
+            configuration.two_sigma 
+        ), 1, 0)
+        
+        indicator_3 = np.where(model.threshold_based_detector(
+            data[column + '_seasonal'].copy(),
+            configuration.window_size,
+            configuration.two_sigma
+        ), 1, 0)
+        
+        # Combine (e.g., logical OR)
+        indicator_2_3 = np.where((indicator_2 + indicator_3) > 0, 1, 0).astype(int)
+         
+        all_outlier = np.where((indicator_1 + indicator_2_3) > 0, 1, 0)
+          
+        # remove anomalies not in dense
+        point_or_contextual, data[column + '_smoothed_data'], data[column + '_expected_data'], data[column + '_zscore'] = model.get_contextual(
+            data[column],
+            all_outlier, 
+            configuration.window_size
         )
          
-        # replace point anomalies with mean
-        data['smoothed_' + feature] = util.replace_point_anomalies(data[feature], data[feature + '_point_anomalies_result'], configuration.window_size)
+        data[column + '_final_result'] = point_or_contextual
      
-    # 2. Contextual Anomalies
-    scaler = MinMaxScaler()
-    for column in feature_to_target:
-        stl_decompose = STL(data['smoothed_' + column], period=configuration.window_size * configuration.no_of_loop, seasonal_deg=0, trend_deg=0, low_pass_deg=0, robust=True).fit()
-        
-        data[column + '_seasonal'] = stl_decompose.seasonal 
-        data[column + '_trend'] = stl_decompose.trend 
-        data[column + '_residual'] = stl_decompose.resid
-        
-        data['expected_' + column] = stl_decompose.trend + stl_decompose.seasonal
-        
-        data[column + '_rolling_std'] = data['smoothed_' + column].rolling(window=configuration.window_size * configuration.no_of_loop, min_periods=1).std()
-        data[column + '_rolling_mean'] = data['smoothed_' + column].rolling(window=configuration.window_size * configuration.no_of_loop, min_periods=1).mean()            
-        
-        has_seasonality = util.check_seasonality(data[column], period=configuration.window_size * configuration.no_of_loop)
-        data[column + '_seasonality_label'] = 1 if has_seasonality else 0
-          
-        target_features = scaler.fit_transform(
-            data[[
-                column + '_residual',
-                column + '_seasonal'
-            ]]
-        )
-
-        data[column + '_contextual_anomalies_isolation'] = \
-            model.detect_contextual_anomalies(target_features) if column + '_seasonality_label' == 1 else \
-            model.detect_point_anomalies(
-                data[column + '_residual'],
-                configuration.threshold,
-                configuration.window_size
-            )
-
-        
-    data['par_model'] = 'ENSEMBLE_MODEL_V1' 
     
-    data['is_outlier'] = data['failed_count_point_anomalies_result'].astype(str)
+    data['par_model'] = 'ENSEMBLE_MODEL_Z_SCORE'
+    
+    data['is_outlier'] = data['count_final_result'].astype(str)
     
     data['feature_1'] = data['count']
     
     data['feature_2'] = data['failed_count']
      
-    data['feature_3'] = data['failed_count_residual'] 
-            
-    data['feature_4'] = data['count_point_anomalies_result']
+    data['feature_3'] = data['failed_count_final_result']
     
-    data['feature_5'] = data['count_contextual_anomalies_isolation']
+    data['feature_4'] = data['count_residual']
     
-    data['feature_6'] = data['failed_count_contextual_anomalies_isolation']
+    # data['feature_5'] = data['count_smoothed_data']
+    # data['feature_5'] = STL(data['failed_count'].copy(), period=configuration.window_size // 24, robust=True).fit().trend
+    data['feature_5'] = data['count_rank_quantile']
     
-    data['feature_7'] = data['count_seasonality_label']
+    # data['feature_6'] = data['failed_count_smoothed_data']
+    # data['feature_6'] = STL(data['count'].copy(), period=configuration.window_size // 24, robust=True).fit().trend
+    data['feature_6'] = data['failed_count_rank_quantile']
     
-    data['feature_8'] = data['failed_count_seasonality_label']
+    data['feature_7'] = data['count_expected_data']
+    # data['feature_7'] = STL(data['count_seasonal'].copy() + data['count_trend'].copy(), period=configuration.window_size // 24, robust=True).fit().trend
+    # data['feature_5'] = data['count_expected_data']
+    
+    data['feature_8'] = data['failed_count_expected_data']
+    # data['feature_8'] = STL(data['failed_count_seasonal'].copy() + data['failed_count_trend'].copy(), period=configuration.window_size // 24, robust=True).fit().trend
+    # data['feature_6'] = data['count_expected_seasonal']
+    
     
     data_to_ingest = data[
         [
@@ -185,12 +217,21 @@ def execute_detection(spark_session, data, configuration):
             'par_date', 
             'par_bound_type'
         ]
-    ]
+    ][configuration.window_size:]
      
     insert_into_hdfs(spark_session, data_to_ingest)
          
       
 def start_action(spark_session, data_source, configuration):
+    """
+    Preprocess the data and group the into subset based on mcc, mnc, rat type and bound type.
+
+    Args:
+        spark_session (object): Spark session initiated 
+        data_source (dataframe): data extracted from SQL query
+        configuration (object): user fdefined configuration or settings
+    """
+    
     mcc_list = data_source.get_mcc_list()
     bound_list = data_source.get_bound_list()
     rat_list = data_source.get_rat_list() 
@@ -199,14 +240,14 @@ def start_action(spark_session, data_source, configuration):
         for bound_type in bound_list:
             for rat_type in rat_list:   
                 # get data filtered by mcc_mnc, bound_type, rat_type
-                data = data_source.get_data(mcc_mnc, bound_type, rat_type)
+                data = data_source.get_data(mcc_mnc, bound_type, rat_type) 
                 
                 if data.empty:
                     print(f"===== Skipping - No Data Found in MCC-MNC: {mcc_mnc}, Bound Type: {bound_type}, RAT Type: {rat_type}") 
                     continue
                 
                 print(f"===== Now running - MCC-MNC: {mcc_mnc}, Bound Type: {bound_type}, RAT Type: {rat_type}") 
-                 
+                  
                 # data['success_rate_detrended'] = make_stationary(data['success_rate']) 
                 # data['total_count_detrended'] = make_stationary(data['total_count'])
                  
@@ -235,8 +276,7 @@ if __name__ == "__main__":
             
             try:
                 # get all data from sql 
-                data = dataset.Dataset(
-                    window_size=configuration.window_size, 
+                data = dataset.Dataset( 
                     query=sql_query   
                 ) 
                 
