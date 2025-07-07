@@ -92,7 +92,7 @@ This project is designed to detect anomalies in time series data, such as transa
 
    This will:
    - Load data from SQL
-   - Process each group (by country, RAT, bound type)
+   - Process each group (by MCC, MNC, RAT, bound type)
    - Detect anomalies and save results to HDFS
 
 ---
