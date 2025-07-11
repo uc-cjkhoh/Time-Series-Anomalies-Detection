@@ -1,12 +1,10 @@
 import pandas as pd 
 import numpy as np
 import util
-   
-from scipy.signal import savgol_filter
+    
 from statsmodels.tsa.seasonal import STL 
-from scipy.stats import median_abs_deviation, skew
-from sklearn.ensemble import IsolationForest
-from sklearn.cluster import DBSCAN
+from scipy.stats import median_abs_deviation 
+from statsmodels.tsa.api import SimpleExpSmoothing, Holt, ExponentialSmoothing
 
  
 def get_all_anomalies(residual, seasonal, trend, lower_q=0.01, upper_q=0.99): 
@@ -48,14 +46,20 @@ def threshold_based_detector(data: pd.Series, window_size: int, threshold: float
     
     indicator_2 = (diff > lower_quantile)
    
-    return indicator_1 & indicator_2 
+   # based on indicator 1 and 2, replace outlier with the value from polynomial fit
+   
+    return indicator_1 & indicator_2, trend
 
 
-def mad_based_z_score(data, window_size, lower_q=0.025, upper_q=0.975) -> bool : 
+def mad_based_z_score(data, trend_strength, window_size, lower_q=0.025, upper_q=0.975) -> bool : 
     polynomial_fit = STL(data, period=window_size, robust=True).fit().trend 
     
     # Calculate deviation from trend
+    # polynomial_fit contains point anomalies due to inconsistent cycle
     deviation = data - polynomial_fit
+    
+    # Simple Exponential Smoothing 
+    # simple_exp_deviation = SimpleExpSmoothing(deviation).fit(smoothing_level=trend_strength, optimized=False).fittedvalues
     
     # create a MAD-based Z-score on the deviations)
     mad = median_abs_deviation(deviation)
@@ -66,7 +70,7 @@ def mad_based_z_score(data, window_size, lower_q=0.025, upper_q=0.975) -> bool :
     deviation_median = deviation.median()
     # deviation_median = pd.Series(deviation).rolling(window_size, min_periods=1).median()
      
-    Modified_Z = (deviation - deviation_median) / (mad * 1.4826)
+    Modified_Z = (deviation - deviation_median) / (mad * 1.4826) 
     
     # adaptive quantile-based threshold 
     lower = Modified_Z.quantile(lower_q) 
@@ -75,15 +79,14 @@ def mad_based_z_score(data, window_size, lower_q=0.025, upper_q=0.975) -> bool :
     return (Modified_Z < lower) | (Modified_Z > upper), Modified_Z
 
 
-def get_contextual(data, all_anomalies, window_size, lower_q=0.025, upper_q=0.975): 
+def get_contextual(data, expected_data, all_anomalies, window_size, lower_q=0.025, upper_q=0.975): 
     # Use STL decomposition for better seasonal pattern recognition 
-    decompose = STL(data, period=window_size, robust=True).fit()
-    expected_value = decompose.trend + decompose.seasonal
+    decompose = STL(data, period=window_size, robust=True).fit() 
      
     smoothed_data = STL(data, period=window_size // 24, robust=True).fit().trend   
     
     # Calculate deviation from trend
-    deviation = smoothed_data - expected_value
+    deviation = smoothed_data - expected_data
       
     mad = median_abs_deviation(deviation)
     # mad = pd.Series(deviation).rolling(window_size, min_periods=1).apply(
@@ -129,4 +132,4 @@ def get_contextual(data, all_anomalies, window_size, lower_q=0.025, upper_q=0.97
     
     # all_anomalies[anomalies_idx] += db_result
     
-    return pd.Series(all_anomalies), smoothed_data, expected_value, Modified_Z
+    return pd.Series(all_anomalies), Modified_Z
