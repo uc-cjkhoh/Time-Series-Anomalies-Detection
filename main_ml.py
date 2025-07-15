@@ -5,6 +5,7 @@ from tqdm import tqdm
 from scipy.stats import boxcox
 
 import os
+import sys
 import warnings
 import pandas as pd
 import numpy as np 
@@ -56,7 +57,7 @@ class Configuration:
             self.spark.sparkContext.addPyFile(python_file)
 
               
-def read_sql_from_file(file_path:str, mcc_mnc:str) -> str: 
+def read_sql_from_file(file_path:str, mcc_mnc:int) -> str: 
     """
     Read or import SQL Query from a text file.
 
@@ -71,8 +72,8 @@ def read_sql_from_file(file_path:str, mcc_mnc:str) -> str:
     if not isinstance(file_path, str):
         raise TypeError(f'argument: file_path supposed to be string format, not {type(file_path)}')
     
-    if not isinstance(mcc_mnc, str):
-        raise TypeError(f'Argument: mcc_mnc code should be string format, not {type(mcc_mnc)}')
+    if not isinstance(mcc_mnc, int):
+        raise TypeError(f'Argument: mcc_mnc code should be integer format, not {type(mcc_mnc)}')
     
     try:
         with open(file_path, 'r') as file:
@@ -175,10 +176,10 @@ def execute_detection(spark_session: SparkSession, data: pd.DataFrame, configura
     feature_to_target = ['count', 'failed_count']   
     
     for column in feature_to_target:
-        transformed_data, lambda_param = boxcox(data[column] + 1)
+        # transformed_data, lambda_param = boxcox(data[column] + 1)
         
         # decomposition of original data
-        stl = STL(pd.Series(transformed_data).copy(), period=configuration.window_size, robust=True).fit() 
+        stl = STL(data[column], period=configuration.window_size, robust=True).fit() 
     
         # detect anomalies in trend component
         indicator_1, smoothed_trend = np.where(model.threshold_based_detector(
@@ -221,14 +222,18 @@ def execute_detection(spark_session: SparkSession, data: pd.DataFrame, configura
         # )
         
         # residual_strength = 1 - trend_strength - seasonal_strength
-         
+        
+        residual_with_dt = pd.DataFrame({
+            column + '_residual': data[column + '_residual'].copy()
+        }) 
+
         indicator_3, mad_z_score = model.mad_based_z_score(
-            data[column + '_residual'].copy(),
+            residual_with_dt.copy().set_index(data['dt']),
             trend_strength,
             configuration.window_size
         )
         
-        indicator_1 = np.where(indicator_3, 2, 0)
+        # indicator_1 = np.where(indicator_3, 2, 0)
         data[column + '_rank_quantile'] = util.get_quantiles_series(
             mad_z_score, mad_z_score
         )
@@ -249,7 +254,7 @@ def execute_detection(spark_session: SparkSession, data: pd.DataFrame, configura
         data[column + '_final_result'] = all_outlier
      
     
-    data['par_model'] = 'ENSEMBLE_MODEL_BOXCOX'
+    data['par_model'] = 'ENSEMBLE_MODEL_SY_AUTO_Q'
     
     data['is_outlier'] = data['count_final_result'].astype(str)
     

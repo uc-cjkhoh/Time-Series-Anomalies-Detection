@@ -1,6 +1,7 @@
 import pandas as pd 
 import numpy as np
 import util
+import sys
     
 from statsmodels.tsa.seasonal import STL 
 from scipy.stats import median_abs_deviation 
@@ -51,12 +52,13 @@ def threshold_based_detector(data: pd.Series, window_size: int, threshold: float
     return indicator_1 & indicator_2, trend
 
 
-def mad_based_z_score(data, trend_strength, window_size, lower_q=0.025, upper_q=0.975) -> bool : 
-    polynomial_fit = STL(data, period=window_size, robust=True).fit().trend 
-    
+def mad_based_z_score(data, trend_strength, window_size, lower_q=0.025, upper_q=0.975) -> bool :
+    polynomial_fit = STL(data.values.squeeze(), period=window_size, robust=True).fit().trend 
+   
+    resid = data.values.squeeze()
     # Calculate deviation from trend
     # polynomial_fit contains point anomalies due to inconsistent cycle
-    deviation = data - polynomial_fit
+    deviation = resid - polynomial_fit
     
     # Simple Exponential Smoothing 
     # simple_exp_deviation = SimpleExpSmoothing(deviation).fit(smoothing_level=trend_strength, optimized=False).fittedvalues
@@ -67,16 +69,64 @@ def mad_based_z_score(data, trend_strength, window_size, lower_q=0.025, upper_q=
     #     lambda x: median_abs_deviation(x, nan_policy='omit')
     # ).bfill().ffill()
      
-    deviation_median = deviation.median()
+    deviation_median = np.median(deviation)
     # deviation_median = pd.Series(deviation).rolling(window_size, min_periods=1).median()
      
     Modified_Z = (deviation - deviation_median) / (mad * 1.4826) 
     
     # adaptive quantile-based threshold 
-    lower = Modified_Z.quantile(lower_q) 
-    upper = Modified_Z.quantile(upper_q)
+    # lower = np.quantile(Modified_Z, lower_q) 
+    # upper = np.quantile(Modified_Z, upper_q)
+
+    # return (Modified_Z < lower) | (Modified_Z > upper), Modified_Z
+
     
-    return (Modified_Z < lower) | (Modified_Z > upper), Modified_Z
+    #============================================SY modify
+     # Dynamically calculate thresholds using IQR
+    # Modified_Z = pd.Series(Modified_Z)
+    Modified_Z = pd.Series(Modified_Z, index=data.index)
+    # data['z_score'] = Modified_Z
+    
+    def auto_define_quantiles(z_scores, target_rate=(0.01, 0.05), try_qs=[0.001, 0.005, 0.01, 0.02, 0.025, 0.05]):
+        for q in try_qs:
+            lower = z_scores.quantile(q)
+            upper = z_scores.quantile(1 - q)
+            anomaly_rate = ((z_scores < lower) | (z_scores > upper)).mean()
+            if target_rate[0] <= anomaly_rate <= target_rate[1]:
+                return q , 1 - q
+        return 0.01, 0.99
+
+    lower_q, upper_q = auto_define_quantiles(Modified_Z, target_rate=(0.01, 0.05))
+
+    # # Debugging: Print the calculated quantiles
+    # print(f"Lower quantile: {lower_q}, Upper quantile: {upper_q}, Anomaly rate: {anomaly_rate}")
+    # sys.exit()
+
+    data['z_score'] = Modified_Z
+    # print("Modified_Z (head):")
+    # print(data['z_score'].head())
+
+    # print("Is NaN count:", data['z_score'].isna().sum())
+
+    # # print("MAD check:")
+    # # print(median_abs_deviation(deviation))
+    # sys.exit()	
+    data['lower'] = data['z_score'].rolling(window=window_size, min_periods = 1, center = True).quantile(lower_q)
+    data['upper'] = data['z_score'].rolling(window=window_size, min_periods = 1, center = True).quantile(upper_q)
+    # data = data[['lower', 'upper', 'z_score']]
+    # print(data[['lower', 'upper', 'z_score']])
+    # sys.exit()
+
+    # print(data[['lower', 'upper']])
+    # sys.exit()
+    #Flag anomalies using hour-specific thresholds
+    data['anomaly'] = (data['z_score'] < data['lower']) | (data['z_score'] > data['upper'])
+ 
+    
+    
+    return data['anomaly'], data['z_score']
+    
+    
 
 
 def get_contextual(data, expected_data, all_anomalies, window_size, lower_q=0.025, upper_q=0.975): 
