@@ -16,5 +16,5 @@ def logging(message, filepath='anomaly_log.txt'):
             
         log_file.close()
             
-    except Exception as e:
+    except Exception as e: 
         print(f"Error: {e}")    
