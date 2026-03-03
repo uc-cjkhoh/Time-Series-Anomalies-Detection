@@ -1,0 +1,6 @@
+# IMPALA_HOST: 'VHEKPGNN-VIP'
+host: '10.168.49.12'
+port: 21050
+
+query_file: './query.txt'
+

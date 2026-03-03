@@ -1,0 +1,108 @@
+WITH target_mcc_mnc AS (
+    SELECT
+        CONCAT(CAST(mcc AS STRING), '-', mnc) AS mccmnc,
+        mcc_ref AS mcc
+    FROM
+        roam352_report_digi.sys_operator_profile
+    WHERE
+        (
+            SELECT CONCAT(',', CAST(sys_param_value AS STRING), ',') AS sys_param_value
+            FROM roam352_report_digi.sys_profile
+            WHERE sys_param_cat = 'DASHBOARD_ANOMALY_ALGO'
+              AND sys_parameter = 'METHOD_CONTAMINATION_BOUNDED'
+        ) LIKE CONCAT('%,', CAST(mcc_ref AS STRING), ',%')
+        OR (
+            SELECT CONCAT(',', CAST(sys_param_value AS STRING), ',') AS sys_param_value
+            FROM roam352_report_digi.sys_profile
+            WHERE sys_param_cat = 'DASHBOARD_ANOMALY_ALGO'
+              AND sys_parameter = 'METHOD_CONTAMINATION_BOUNDED'
+        ) LIKE CONCAT('%,', CAST(mcc_ref AS STRING), mnc_ref, ',%')
+),
+base_tx AS (
+    SELECT
+        dt,
+        mcc_mnc,
+        rat_type,
+        par_bound_type,
+        count,
+        total_count
+    FROM (
+        SELECT
+            dt,
+            mcc_mnc,
+            rat_type,
+            tx_status,
+            par_bound_type,
+            count,
+            SUM(count) OVER (
+                PARTITION BY dt, mcc_mnc, rat_type, par_bound_type
+            ) AS total_count
+        FROM (
+            SELECT
+                dt,
+                CONCAT(CAST(mcc AS STRING), '-', mnc) AS mcc_mnc,
+                rat_type,
+                tx_status,
+                par_bound_type,
+                COUNT(1) AS count
+            FROM (
+                SELECT
+                    CONCAT(
+                        tx_date, ' ',
+                        RIGHT(CONCAT('0', CAST(tx_hour AS STRING)), 2), ':',
+                        RIGHT(CONCAT('0', CAST(tx_5m AS STRING)), 2), ':00'
+                    ) AS dt,
+                    IF(mcc_ref_primary > 0, mcc_ref_primary, mcc_ref) AS mcc,
+                    IF(mnc_ref_primary != '', mnc_ref_primary, mnc_ref) AS mnc,
+                    rat_type,
+                    IF(
+                        status_type = 12
+                        AND (`status` IN ('1','2','3','4','5')),
+                        1,
+                        0
+                    ) AS tx_status,
+                    par_bound_type
+                FROM roam352_report_digi.data_em
+                WHERE par_date = 20240217 
+                AND par_bound_type = 2
+                AND op_code IN (2, 23, 316)
+                AND (mcc_ref_primary = 505 OR mcc_ref = 505)
+            ) tbl
+            GROUP BY dt, mcc_mnc, rat_type, tx_status, par_bound_type
+        ) tbl
+    ) tbl
+    WHERE tx_status = 1
+),
+full_time_list AS (
+    SELECT DISTINCT
+        base_tx.dt,
+        mcc_list.mcc_mnc,
+        mcc_list.rat_type
+    FROM base_tx
+    CROSS JOIN (
+        SELECT DISTINCT mcc_mnc, rat_type
+        FROM base_tx
+    ) mcc_list
+),
+full_bounded_list AS (
+    SELECT
+        *,
+        2 AS par_bound_type
+    FROM full_time_list
+)
+SELECT
+    CAST(timelist.dt AS TIMESTAMP) AS dt, 
+    timelist.mcc_mnc AS mcc_mnc,
+    timelist.rat_type AS rat_type,
+    timelist.par_bound_type AS par_bound_type,
+    COALESCE(base.count, 0) AS count,
+    COALESCE(base.total_count, 0) AS total_count
+FROM full_bounded_list timelist
+LEFT JOIN base_tx base
+    ON timelist.dt = base.dt
+    AND timelist.mcc_mnc = base.mcc_mnc
+    AND timelist.par_bound_type = base.par_bound_type
+    AND timelist.rat_type = base.rat_type
+ORDER BY
+    timelist.rat_type,
+    timelist.dt;
