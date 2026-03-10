@@ -17,6 +17,6 @@ class ConfigLoader:
             raise     
             
             
-@task(name='', cache_policy=NO_CACHE)
+@task(name='Return Configuration', cache_policy=NO_CACHE)
 def get_config():
     return ConfigLoader()

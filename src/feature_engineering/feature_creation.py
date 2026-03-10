@@ -1,7 +1,8 @@
+import numpy as np
 import pandas as pd
 
 from datetime import datetime
-from scipy.fft import fft, rfft, fftfreq, rfftfreq
+from scipy.signal import detrend
 from statsmodels.tsa.stattools import acf, pacf
 from statsmodels.tsa.seasonal import STL
 
@@ -16,19 +17,42 @@ class FeatureEngineer:
         return self.data.rolling(window=nlags, min_periods=1).mean()
     
     
-    def autocorrelation(self, nlags: int):
+    def autocorrelation(self, *args, **kwargs):
         """Perform Autocorrelation"""
-        return acf(self.data, nlags=nlags)
+        return acf(self.data, **kwargs)
         
         
-    def partial_autocorrelation(self, nlags: int):
+    def partial_autocorrelation(self, *args, **kwargs):
         """Perform Partial-Autocorrelation"""
+        return pacf(self.data, **kwargs)
         
     
     def fourier_transforms(self, sampling_interval: int):
         """Perform Fourier Transform"""
-        return fft(self.data)
-    
+        detrend_data = detrend(self.data)
+        
+        fft_vals = np.fft.fft(detrend_data)
+        freqs = np.fft.fftfreq(len(self.data), d=sampling_interval)
+        
+        is_pos = freqs > 0
+        power = np.abs(fft_vals[is_pos]) ** 2
+        
+        peak_power = np.max(power)
+        avg_power = np.mean(power)
+        
+        power_ratio = peak_power / avg_power
+        
+        return power_ratio
+        
+        # has_cycle = power_ratio > power_ratio_threshold
+        
+        # if has_cycle:
+        #     peak_freq = freqs[np.argmax(power)]
+        #     period_minutes = 1 / peak_freq
+        #     return True, period_minutes, power_ratio
+        # else:
+        #     return False, None, power_ratio
+            
     
     def decomposition(self, period: int):
         """Perform Seasonal Decomposition"""
@@ -38,13 +62,3 @@ class FeatureEngineer:
         residual = decomposed_data.resid
         
         return trend, seasonal, residual
-    
-    
-    def extract_features(self): 
-        return {
-            'mavg_1': self.mavg(1),
-            'mavg_7': self.mavg(7),
-            'mavg_14': self.mavg(14),
-            'mavg_28': self.mavg(28),
-
-        }

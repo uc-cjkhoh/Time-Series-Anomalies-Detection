@@ -63,7 +63,7 @@ base_tx AS (
                     ) AS tx_status,
                     par_bound_type
                 FROM roam352_report_digi.data_em
-                WHERE par_date = 20240217 
+                WHERE par_date between 20240225 and 20240228 
                 AND par_bound_type = 2
                 AND op_code IN (2, 23, 316)
                 AND (mcc_ref_primary = 505 OR mcc_ref = 505)
