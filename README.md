@@ -244,19 +244,7 @@ To contribute improvements:
 2. Make changes following project structure
 3. Test with: `python -m pytest tests/`
 4. Submit pull request with documentation
-
-## License
-
-Specify your license here.
-
-## Support
-
-For issues or questions:
-- Check [Monitoring and Troubleshooting](#monitoring-and-troubleshooting) section
-- Review logs and error messages
-- Verify Kafka connectivity and data format
-- Check dependencies are installed: `pip list | grep -E "pandas|river|confluent"`
-
+ 
 ## Changelog
 
 ### Version 0.1.0 (Current)
