@@ -22,16 +22,7 @@ CONSUMER_CONFIG = {
 def one_minute_interval(dt: datetime) -> datetime:
     return dt.replace(second=0, microsecond=0)
  
-
-def on_assign(consumer, partitions):
-    print(f'Partitions assigned: {[p.partition for p in partitions]}')
-
-
-def on_revoke(consumer, partitions):
-    print(f'Partitions revoked: {[p.partition for p in partitions]}')
-    consumer.commit(asynchronous=False)
-
-
+ 
 def main():
     # workers shared state
     work_queue = queue.Queue(maxsize=10000)
@@ -52,7 +43,7 @@ def main():
     consumer = Consumer(CONSUMER_CONFIG)
     
     # Subscribe to [TOPIC] tunnel
-    consumer.subscribe([TOPIC], on_assign=on_assign, on_revoke=on_revoke)
+    consumer.subscribe([TOPIC])
 
     try:
         while True:
@@ -71,6 +62,12 @@ def main():
             # msg.value() returns raw bytes — decode once here
             try:
                 value = json.loads(msg.value().decode('utf-8')) # type: ignore
+                tx_dt = datetime.fromtimestamp(value['module_dt'] // 1000)  
+                tx_mcc = value['mcc_ref']
+                tx_mnc = value['mnc_ref']
+                tx_rat = value['rat_type']
+                tx_bound_type = value['bound_type']
+                bucket_dt = one_minute_interval(tx_dt)
             except (json.JSONDecodeError, UnicodeDecodeError) as e:
                 print(f'Skipping malformed message: {e}')
                 continue
@@ -78,14 +75,7 @@ def main():
             # filtering statements
             if str(value.get('op_code')) not in {'2', '23', '316'}:
                 continue
-
-            tx_dt = datetime.fromtimestamp(value['module_dt'] // 1000)  
-            tx_mcc = value['mcc_ref']
-            tx_mnc = value['mnc_ref']
-            tx_rat = value['rat_type']
-            tx_bound_type = value['bound_type']
-            bucket_dt = one_minute_interval(tx_dt)
-
+ 
             group_id = f'{tx_mcc}-{tx_mnc}-{tx_rat}-{tx_bound_type}'
             
             # if not exists in report dict, create new report with new group_id
