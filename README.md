@@ -244,12 +244,3 @@ To contribute improvements:
 2. Make changes following project structure
 3. Test with: `python -m pytest tests/`
 4. Submit pull request with documentation
- 
-## Changelog
-
-### Version 0.1.0 (Current)
-- Initial implementation
-- Kafka producer/consumer pipeline
-- Basic statistics aggregation
-- Anomaly detection framework (template)
-- Real-time visualization support
