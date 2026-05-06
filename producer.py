@@ -7,16 +7,16 @@
 # row = json.loads(data.decode('utf-8'))
 # client_socket.close()
 
-import asyncio
 import json
-import socket
-
-import pandas as pd
+import socket 
+import asyncio
 import numpy as np
+import pandas as pd
+
 from confluent_kafka import Producer
 
 
-TOPIC = 'roaming_tx_test3'
+TOPIC = 'roaming_tx_test5'
 
 PRODUCER_CONFIG = {
     'bootstrap.servers': 'localhost:9092',
@@ -75,7 +75,7 @@ async def dynamic_subscribe(producer: Producer):
         # Drain delivery callbacks without blocking the event loop
         producer.poll(0)
 
-        await asyncio.sleep(np.random.rand())
+        await asyncio.sleep(0.01)
 
     # Block until all in-flight messages are acknowledged before exit
     remaining = producer.flush(timeout=30)

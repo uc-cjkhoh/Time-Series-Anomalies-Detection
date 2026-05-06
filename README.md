@@ -16,49 +16,21 @@ This system processes transaction streams from multiple cellular operators, aggr
 
 ## Architecture
 
-```
-┌──────────────────────────┐
-│  Impala Database         │
-│  (historical data)       │
-└──────────────────────────┘
-         ↓
-  get_transaction.py
-         ↓
-┌──────────────────────────┐
-│  transaction.csv         │
-└──────────────────────────┘
-         ↓
-  producer.py (CSV → Kafka)
-         ↓
-┌──────────────────────────┐
-│  Apache Kafka Topic      │
-│  roaming_tx_test3        │
-└──────────────────────────┘
-         ↓
-┌──────────────────────────────────┐
-│  consumer.py                     │
-│  (Stream Processor)              │
-│  ├─ Filters by op_code           │
-│  ├─ Groups by MCC-MNC-RAT-Type   │
-│  ├─ Aggregates 1-min stats       │
-│  └─ Queues StatsReport objects   │
-└──────────────────────────────────┘
-         ↓
-┌──────────────────────────┐
-│  work_queue              │
-│  (Max 10,000 items)      │
-└──────────────────────────┘
-         ↓
-┌──────────────────────────────────┐
-│  anomaly_detection.py            │
-│  (Worker Thread)                 │
-│  └─ Apply online learning models │
-└──────────────────────────────────┘
-         ↓
-┌──────────────────────────┐
-│  real_time_plot.py       │
-│  (Optional visualization)│
-└──────────────────────────┘
+```mermaid
+graph TD
+    A["Impala Database<br/>(historical data)"] -->|download| B["get_transaction.py<br/>↓<br/>transaction.csv"]
+    B --> C["Kafka Topic<br/>roaming_tx_test3"]
+    C -->|consume| D["producer.py<br/>CSV → Kafka"]
+    D -->|publish| E["consumer.py<br/>Stream Processor"]
+    E -->|• Filters by op_code<br/>• Groups by MCC-MNC-RAT-Bound_Type<br/>• Aggregates 1-min statistics<br/>• Queues StatsReport| F["work_queue<br/>Max 10,000 items"]
+    F -->|process| G["anomaly_detection.py<br/>Worker Thread<br/>Apply online learning models"]
+    G -->|optional| H["real_time_plot.py<br/>Visualization"]
+    
+    style A fill:#e1f5ff
+    style C fill:#fff3e0
+    style E fill:#f3e5f5
+    style G fill:#e8f5e9
+    style H fill:#fce4ec
 ```
 
 **Components:**
@@ -214,33 +186,79 @@ ts_anomaly_detection_test/
 
 ## Data Flow
 
-### Transaction Flow
+### Transaction Processing Pipeline
 
 ```
-Raw Transaction (source)
+Kafka Message (raw)
     ↓
-[Consumer.poll()] - Read from Kafka topic
+[consumer.poll(1.0)]
     ↓
-[Decode & Parse] - JSON decode, timestamp conversion
+[Decode JSON & Extract Fields]
+    ├─ module_dt → tx_dt (timestamp)
+    ├─ mcc_ref → tx_mcc
+    ├─ mnc_ref → tx_mnc
+    ├─ rat_type → tx_rat
+    └─ bound_type → tx_bound_type
     ↓
-[Filter op_code] - Only keep codes: 2, 23, 316
+[Filter: op_code in {2, 23, 316}]
     ↓
-[Group By] - MCC-MNC-RAT-Bound_Type
+[Create group_id] = f"{mcc}-{mnc}-{rat}-{bound_type}"
     ↓
-[Create StatsReport] - Initialize if first time
+[Check bucket changed] (1-minute interval)
+    ├─ YES: Queue previous bucket's StatsReport
+    └─ NO: Continue
     ↓
-[Check Time Bucket] - If bucket changed, queue report
+[Record transaction]
+    ├─ tx_status = (status_type==12 AND status in {1,2,3,4,5})
+    └─ Update: tx_succ_count++, tx_total_count++
     ↓
-[Record Transaction] - tx_succ_count++, tx_total_count++
-    ↓
-[Commit Offset] - Asynchronous offset commit
+[consumer.commit(asynchronous=True)]
 ```
 
-## Contributing
+### StatsReport Structure
 
-To contribute improvements:
+```python
+StatsReport(
+    mcc='505',                      # Mobile Country Code
+    mnc='12',                       # Mobile Network Code
+    rat='LTE',                      # Radio Access Technology
+    bound_type='DL',                # Download/Upload
+    dt=datetime(...),               # Bucket timestamp (1-min interval)
+    tx_succ_count=145,              # Successful transactions
+    tx_total_count=152              # Total transactions
+)
+```
 
-1. Create feature branch: `git checkout -b feature/my-feature`
-2. Make changes following project structure
-3. Test with: `python -m pytest tests/`
-4. Submit pull request with documentation
+### CSV Column Mapping
+
+| CSV Column | Target | Type | Notes |
+|-----------|--------|------|-------|
+| `module_dt` | `dt` | timestamp | Unix ms → datetime |
+| `mcc_ref` | `mcc` | string | Operator code |
+| `mnc_ref` | `mnc` | string | Network code |
+| `rat_type` | `rat` | string | LTE, 5G, etc. |
+| `bound_type` | `bound_type` | string | DL or UL |
+| `op_code` | filter | int | Keep: 2, 23, 316 |
+| `status_type` | part of `tx_status` | int | Must be 12 |
+| `status` | part of `tx_status` | string | Must be 1-5 |
+
+### Anomaly Detection (Template)
+
+```
+StatsReport (1-min aggregated stats)
+    ↓
+[work_queue.put_nowait(report)]
+    ↓
+[perform_detection() worker thread]
+    ↓
+[SNARIMAX model] (Seasonal ARIMA)
+    ├─ period: 288 observations
+    ├─ differencing: d=1, sd=1
+    └─ Regressor: StandardScaler | LinearRegression (SGD)
+    ↓
+[Anomaly Score] = predictions vs actual
+    ├─ Threshold: μ ± 3.5σ
+    └─ Warmup: 15 observations before triggering
+    ↓
+[Output] Anomaly detection results
+```
