@@ -5,7 +5,7 @@ import threading
 from datetime import datetime
 from confluent_kafka import Consumer, KafkaError, KafkaException
 from src.classes.report import PeriodicReport, ReportSnapshot
-from src.online_ml.workflow import anomaly_detection
+from src.online_ml.architecture import detection_pipeline
 
 
 TOPIC = 'roaming_tx_test5'
@@ -29,8 +29,8 @@ def main():
     stop_event = threading.Event()
     
     worker = threading.Thread(
-        target=anomaly_detection, 
-        args=(work_queue, stop_event, 288),
+        target=detection_pipeline, 
+        args=(work_queue, stop_event, 12),
         daemon=True,
         name='anomaly_detection',
     ) 
@@ -55,27 +55,19 @@ def main():
                 
                 raise KafkaException(msg.error())
  
-            try:
-                value = json.loads(msg.value().decode('utf-8')) # type: ignore
-            except (json.JSONDecodeError, UnicodeDecodeError) as e:
-                print(f'Skipping malformed message: {e}')
-                continue
- 
+            value = json.loads(msg.value().decode('utf-8')) # type: ignore
+            
             # DATA FILTERING
             if int(value.get('op_code')) not in [2, 23, 316]:
                 continue
  
-            try:
-                tx_dt = datetime.fromtimestamp(value['module_dt'] // 1000)  
-                tx_mcc = value['mcc_ref']
-                tx_mnc = value['mnc_ref']
-                tx_rat = value['rat_type']
-                tx_bound_type = value['bound_type']
-                bucket_dt = one_minute_interval(tx_dt)
-            except KeyError as e:
-                print(f'Skipping message with missing field: {e}')
-                continue
-                
+            tx_dt = datetime.fromtimestamp(value['module_dt'] // 1000)  
+            tx_mcc = value['mcc_ref']
+            tx_mnc = value['mnc_ref']
+            tx_rat = value['rat_type']
+            tx_bound_type = value['bound_type']
+            
+            bucket_dt = one_minute_interval(tx_dt)
             group_id = f'{tx_mcc}-{tx_mnc}-{tx_rat}-{tx_bound_type}'
              
             if group_id not in stats_report:    

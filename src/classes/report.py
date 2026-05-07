@@ -1,11 +1,24 @@
-import numpy as np 
-
 from dataclasses import dataclass
 from datetime import datetime
-from river import anomaly, drift, stats
-from river.utils import Rolling
+from river import stats, anomaly
 
+         
 
+@dataclass
+class ReportSnapshot:
+    mcc: int
+    mnc: str
+    rat: int
+    bound_type: int
+    dt: datetime
+    tx_succ_count: int
+    tx_total_count: int
+     
+    @property
+    def report_id(self):
+        return f'{self.mcc}-{self.mnc}-{self.rat}-{self.bound_type}'
+    
+ 
 
 class PeriodicReport:
     def __init__(self, mcc, mnc, rat, bound_type, dt = None, tx_succ_count = 0, tx_total_count = 0):
@@ -25,78 +38,49 @@ class PeriodicReport:
         self.dt = dt
         self.tx_succ_count = 0
         self.tx_total_count = 0
-         
-
-@dataclass
-class ReportSnapshot:
-    mcc: int
-    mnc: str
-    rat: int
-    bound_type: int
-    dt: datetime
-    tx_succ_count: int
-    tx_total_count: int
-     
-    @property
-    def report_id(self):
-        return f'{self.mcc}-{self.mnc}-{self.rat}-{self.bound_type}'
-    
 
 
-class OnlineMLReport:
+
+class FeaturesExtraction:
     def __init__(self, window_size):
-        self.succ_tx_median = stats.RollingQuantile(q=0.5, window_size=window_size)
-        self.succ_tx_var = Rolling(stats.Var(), window_size)
-        self.succ_tx_autocorr = stats.AutoCorr(lag=window_size)
-        
-        self.total_tx_median = stats.RollingQuantile(q=0.5, window_size=window_size)
-        self.total_tx_var = Rolling(stats.Var(), window_size)
-        self.total_tx_autocorr = stats.AutoCorr(lag=window_size)
-    
+        self.succ_tx_median = stats.RollingQuantile(q=0.5, window_size=window_size)  
+        self.total_tx_median = stats.RollingQuantile(q=0.5, window_size=window_size) 
     
     def update_and_extract(self, snapshot: ReportSnapshot):
         current_succ_count = snapshot.tx_succ_count
         current_total_count = snapshot.tx_total_count 
         
         # success transaction count statistic
-        self.succ_tx_median.update(current_succ_count) # type: ignore
-        self.succ_tx_var.update(current_succ_count)
-        self.succ_tx_autocorr.update(current_succ_count) # type: ignore
-        
-        succ_tx_median = self.succ_tx_median.get() 
-        succ_tx_var = self.succ_tx_var.get() 
-        succ_tx_autocorr = self.succ_tx_autocorr.get() 
-        
-        # total transcation count statistic
-        self.total_tx_median.update(current_total_count) # type: ignore
-        self.total_tx_var.update(current_total_count)
-        self.total_tx_autocorr.update(current_total_count) # type: ignore
-        
-        total_tx_median = self.total_tx_median.get() 
-        total_tx_var = self.total_tx_var.get() 
-        total_tx_autocorr = self.total_tx_autocorr.get()
-        
+        current_succ_tx_median = self.succ_tx_median.get() or current_succ_count
+        self.succ_tx_median.update(current_succ_count) # type: ignore  
+         
+        # total transcation count statistic 
+        current_total_tx_median = self.total_tx_median.get() or current_total_count
+        self.total_tx_median.update(current_total_count) # type: ignore 
+         
         return {
-            'succ_tx_median': succ_tx_median,
-            'succ_tx_var': succ_tx_var,
-            'succ_tx_autocorr': succ_tx_autocorr,
-            'total_tx_median': total_tx_median,
-            'total_tx_var': total_tx_var,
-            'total_tx_autocorr': total_tx_autocorr
+            'succ_tx_count': snapshot.tx_succ_count,
+            'total_tx_count': snapshot.tx_total_count,
+            'succ_tx_median_delta': self.succ_tx_median.get() - current_succ_tx_median, # type: ignore  
+            'total_tx_median_delta': self.total_tx_median.get() - current_total_tx_median, # type: ignore 
         }
     
-    
-@dataclass
-class AnomalyResult:
-    mcc: int
-    mnc: str
-    rat: int
-    bound_type: int
-    score: float
-    is_anomaly: int
-    
 
 
+class AnomalyReport:
+    def __init__(self, window_size: int):
+        self.model =  anomaly.HalfSpaceTrees(window_size=window_size)
+    
+    def update_model(self, x: dict):
+        self.model.learn_one(x)
+
+    def get_anomalies_score(self, x: dict):
+        anomaly_score = self.model.score_one(x)
+        self.model.learn_one(x)
+        
+        return anomaly_score
+    
+    
     
 # class LRUCache:
 #     def __init__(self, capacity: int):
