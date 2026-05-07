@@ -156,10 +156,7 @@ ts_anomaly_detection_test/
 │   │   └── stream_state_processor.py    # StatsReport class
 │   ├── worker/
 │   │   ├── __init__.py
-│   │   └── anomaly_detection.py         # Detection worker (threaded)
-│   └── visual/
-│       ├── __init__.py
-│       └── real_time_plot.py            # Matplotlib dashboard
+│   │   └── anomaly_detection.py         # Detection worker (threaded) 
 │
 ├── data/
 │   ├── data.csv
