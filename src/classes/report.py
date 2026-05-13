@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from datetime import datetime
-from river import stats, anomaly
+from river import stats, anomaly, preprocessing, compose, utils
 
          
 
@@ -8,7 +8,7 @@ from river import stats, anomaly
 class ReportSnapshot:
     mcc: int
     mnc: str
-    rat: int
+    rat: int 
     bound_type: int
     dt: datetime
     tx_succ_count: int
@@ -44,32 +44,58 @@ class PeriodicReport:
 class FeaturesExtraction:
     def __init__(self, window_size):
         self.succ_tx_median = stats.RollingQuantile(q=0.5, window_size=window_size)  
+        self.succ_tx_ma = utils.Rolling(stats.Mean(), window_size=window_size)
+        self.succ_tx_mvar = utils.Rolling(stats.Var(), window_size=window_size)
+        
         self.total_tx_median = stats.RollingQuantile(q=0.5, window_size=window_size) 
-    
+        self.total_tx_ma = utils.Rolling(stats.Mean(), window_size=window_size)
+        self.total_tx_mvar = utils.Rolling(stats.Var(), window_size=window_size)
+        
+            
     def update_and_extract(self, snapshot: ReportSnapshot):
         current_succ_count = snapshot.tx_succ_count
-        current_total_count = snapshot.tx_total_count 
+        current_total_count = snapshot.tx_total_count
         
         # success transaction count statistic
-        current_succ_tx_median = self.succ_tx_median.get() or current_succ_count
+        # current_succ_tx_median = self.succ_tx_median.get() or current_succ_count
+        current_succ_tx_ma = self.succ_tx_ma.get() or current_succ_count
+        current_succ_tx_std = (self.succ_tx_mvar.get() or 0) ** 0.5
+        
         self.succ_tx_median.update(current_succ_count) # type: ignore  
+        self.succ_tx_ma.update(current_succ_count)
+        self.succ_tx_mvar.update(current_succ_count)
          
         # total transcation count statistic 
-        current_total_tx_median = self.total_tx_median.get() or current_total_count
+        # current_total_tx_median = self.total_tx_median.get() or current_total_count  
+        current_total_tx_ma = self.total_tx_ma.get() or current_total_count
+        current_total_tx_std = (self.total_tx_mvar.get() or 0) ** 0.5
+        
         self.total_tx_median.update(current_total_count) # type: ignore 
+        self.total_tx_ma.update(current_total_count)
+        self.total_tx_mvar.update(current_total_count)
          
         return {
+            'dt': int(snapshot.dt.timestamp() * 1000),
             'succ_tx_count': snapshot.tx_succ_count,
+            'succ_tx_ma': self.succ_tx_ma.get(),
+            'succ_tx_mvar': self.succ_tx_mvar.get(),
+            'succ_tx_median': self.succ_tx_median.get(),
+            'succ_count_z_score': (snapshot.tx_succ_count - current_succ_tx_ma) / (current_succ_tx_std + 1e-9),
             'total_tx_count': snapshot.tx_total_count,
-            'succ_tx_median_delta': self.succ_tx_median.get() - current_succ_tx_median, # type: ignore  
-            'total_tx_median_delta': self.total_tx_median.get() - current_total_tx_median, # type: ignore 
+            'total_tx_ma': self.total_tx_ma.get(),
+            'total_tx_mvar': self.total_tx_mvar.get(),
+            'total_tx_median': self.total_tx_median.get(), 
+            'total_count_z_score': (snapshot.tx_total_count - current_total_tx_ma) / (current_total_tx_std + 1e-9)
         }
     
 
 
 class AnomalyReport:
     def __init__(self, window_size: int):
-        self.model =  anomaly.HalfSpaceTrees(window_size=window_size)
+        self.model =  compose.Pipeline(
+            preprocessing.StandardScaler(),
+            anomaly.HalfSpaceTrees(window_size=window_size)
+        )
     
     def update_model(self, x: dict):
         self.model.learn_one(x)

@@ -4,6 +4,7 @@ __pycache__/
 build/
 dist/
 wheels/
+model_checkpoints/
 data/*
 *.egg-info
 

@@ -8,16 +8,19 @@ from src.classes.report import PeriodicReport, ReportSnapshot
 from src.online_ml.architecture import detection_pipeline
 
 
-TOPIC = 'roaming_tx_test5'
-
+# kafka configurations
+TOPIC = 'roaming_tx_test'
 CONSUMER_CONFIG = {
     'bootstrap.servers': 'localhost:9092',
     'group.id': 'roaming-monitor-group',
     'auto.offset.reset': 'earliest',        
     'enable.auto.commit': False,            
 }
-
 COMMIT_N = 100
+
+# anomaly detection configurations
+WINDOW_SIZE=288 
+ANOMALY_THRESHOLD=0.9
 
 
 def one_minute_interval(dt: datetime) -> datetime:
@@ -30,7 +33,7 @@ def main():
     
     worker = threading.Thread(
         target=detection_pipeline, 
-        args=(work_queue, stop_event, 12),
+        args=(work_queue, stop_event, WINDOW_SIZE, ANOMALY_THRESHOLD),
         daemon=True,
         name='anomaly_detection',
     ) 
@@ -55,12 +58,12 @@ def main():
                 
                 raise KafkaException(msg.error())
  
-            value = json.loads(msg.value().decode('utf-8')) # type: ignore
+            value = json.loads(msg.value().decode('utf-8')) # type: ignore 
             
             # DATA FILTERING
             if int(value.get('op_code')) not in [2, 23, 316]:
                 continue
- 
+            
             tx_dt = datetime.fromtimestamp(value['module_dt'] // 1000)  
             tx_mcc = value['mcc_ref']
             tx_mnc = value['mnc_ref']
@@ -72,7 +75,7 @@ def main():
              
             if group_id not in stats_report:    
                 stats_report[group_id] = PeriodicReport(tx_mcc, tx_mnc, tx_rat, tx_bound_type, bucket_dt)
-
+ 
             # SEND / MODIFY REPORT
             current_report = stats_report[group_id]
             if stats_report[group_id].dt != bucket_dt:

@@ -22,7 +22,7 @@ cursor.execute(
     FROM 
         roam352_report_digi.data_em 
     WHERE
-        par_date = 20240228 
+        par_date in (20240229)
         AND mcc_ref in (505, 502)  
     '''
 )
@@ -33,7 +33,7 @@ columns = [col[0] for col in cursor.description]
 # Fetch results
 results = pd.DataFrame(cursor.fetchall(), columns=columns)
 
-results.to_csv('./data/transaction.csv')
+results.to_csv('./data/20240229__transaction.csv', index=False)
 
 # Close connection
 cursor.close()

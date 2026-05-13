@@ -8,15 +8,15 @@
 # client_socket.close()
 
 import json
+import glob
 import socket 
 import asyncio
-import numpy as np
 import pandas as pd
 
 from confluent_kafka import Producer
 
 
-TOPIC = 'roaming_tx_test5'
+TOPIC = 'roaming_tx_test'
 
 PRODUCER_CONFIG = {
     'bootstrap.servers': 'localhost:9092',
@@ -47,6 +47,7 @@ CSV_DTYPES = {
 }
 
 
+
 def delivery_report(err, msg):
     if err is not None:
         print(f'Delivery failed | key={msg.key()} | {err}')
@@ -59,7 +60,12 @@ def delivery_report(err, msg):
 
 
 async def dynamic_subscribe(producer: Producer):
-    data = pd.read_csv('./data/transaction.csv', dtype=CSV_DTYPES).sort_values(by='module_dt', ascending=True) # type: ignore
+    data_list = glob.glob('./data/*_transaction.csv')
+    
+    data = pd.concat(
+        (pd.read_csv(file, dtype=CSV_DTYPES) for file in data_list),
+        ignore_index=True
+    ).sort_values(by='module_dt', ascending=True)
 
     for row in data.to_dict(orient='records'):
         # Key = mcc_ref-mnc_ref ensures same operator → same partition → same consumer
@@ -75,7 +81,7 @@ async def dynamic_subscribe(producer: Producer):
         # Drain delivery callbacks without blocking the event loop
         producer.poll(0)
 
-        await asyncio.sleep(0.01)
+        await asyncio.sleep(0.005)
 
     # Block until all in-flight messages are acknowledged before exit
     remaining = producer.flush(timeout=30)
