@@ -13,6 +13,8 @@ import socket
 import asyncio
 import pandas as pd
 
+from typing import Any
+from collections.abc import Hashable
 from confluent_kafka import Producer
 
 
@@ -26,7 +28,7 @@ PRODUCER_CONFIG = {
     'compression.type': 'snappy',
 }
 
-CSV_DTYPES = {
+CSV_DTYPES: dict[Hashable, Any] = {
     'trans_iid':            str,
     'trans_eid':            str,
     'mme_host':             str,

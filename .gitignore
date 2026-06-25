@@ -7,6 +7,7 @@ wheels/
 model_checkpoints/
 data/*
 *.egg-info
-
-# Virtual environments
 .venv
+AGENTS.md
+
+

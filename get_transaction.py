@@ -28,10 +28,16 @@ cursor.execute(
 )
 
 # Get columns name
+if cursor.description is None:
+    raise RuntimeError("Query returned no result set (cursor.description is None)")
+
 columns = [col[0] for col in cursor.description]
 
 # Fetch results
-results = pd.DataFrame(cursor.fetchall(), columns=columns)
+raw = cursor.fetchall()
+if raw is None:
+    raw = []
+results = pd.DataFrame(raw, columns=pd.Index(columns))
 
 results.to_csv('./data/20240229__transaction.csv', index=False)
 
